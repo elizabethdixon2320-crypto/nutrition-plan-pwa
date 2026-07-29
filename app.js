@@ -978,7 +978,7 @@
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=7", { updateViaCache: "none" }).catch((error) => {
         console.warn("离线缓存注册失败。", error);
       });
     });
