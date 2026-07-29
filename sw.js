@@ -1,4 +1,4 @@
-const CACHE_NAME = "nutrition-plan-v5";
+const CACHE_NAME = "nutrition-plan-v6";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -7,7 +7,15 @@ const APP_SHELL = [
   "./chart.js",
   "./app.js",
   "./manifest.webmanifest",
-  "./icons/icon.svg"
+  "./icons/icon.svg",
+  "./icons/ui/home.svg",
+  "./icons/ui/salad.svg",
+  "./icons/ui/chart-line.svg",
+  "./icons/ui/user-circle.svg",
+  "./icons/ui/search.svg",
+  "./icons/ui/scale.svg",
+  "./icons/ui/x.svg",
+  "./icons/ui/target-arrow.svg"
 ];
 
 self.addEventListener("install", (event) => {
