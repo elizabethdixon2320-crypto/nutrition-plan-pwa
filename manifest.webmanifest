@@ -1,0 +1,21 @@
+{
+  "id": "./",
+  "name": "个人营养计划",
+  "short_name": "营养计划",
+  "description": "个人使用的宏量营养、食物热量与体重趋势记录工具。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f5f7fa",
+  "theme_color": "#f5f7fa",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
