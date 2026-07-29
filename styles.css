@@ -619,7 +619,7 @@ p { text-wrap: pretty; }
   width: min(100%, 520px);
   min-height: calc(68px + var(--safe-bottom));
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   padding: 6px 10px var(--safe-bottom);
   transform: translateX(-50%);
   border-top: 1px solid rgba(203,212,223,.86);
@@ -712,6 +712,27 @@ p { text-wrap: pretty; }
   background: white;
   font-size: 16px;
 }
+.measure-locked {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding: 13px 14px;
+  border: 1px solid #cbdcf5;
+  border-radius: 13px;
+  background: var(--blue-soft);
+}
+.measure-locked span {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 750;
+}
+.measure-locked strong { font-size: 14px; }
+.measure-locked small {
+  grid-column: 1 / -1;
+  color: #53657a;
+  font-size: 11px;
+  line-height: 1.55;
+}
 .segment {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -741,6 +762,17 @@ p { text-wrap: pretty; }
 .nutrition-preview div + div { border-left: 1px solid var(--line); }
 .nutrition-preview strong { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
 .nutrition-preview span { color: var(--muted); font-size: 10px; }
+.food-source {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 13px;
+  background: #f4f6f8;
+}
+.food-source span { color: var(--muted); font-size: 10px; font-weight: 750; }
+.food-source strong { font-size: 11px; line-height: 1.45; }
+.food-source small { color: var(--quiet); font-size: 10px; line-height: 1.5; }
 .formula-note {
   margin: 0 0 16px;
   padding: 14px;
