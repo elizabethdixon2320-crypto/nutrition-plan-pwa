@@ -41,6 +41,10 @@
       .replaceAll("'", "&#039;");
   }
 
+  function icon(name, className = "") {
+    return `<img class="ui-icon ${className}" src="icons/ui/${name}.svg" alt="" aria-hidden="true" />`;
+  }
+
   function makeId(prefix) {
     return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
@@ -204,9 +208,9 @@
 
   function pageMeta() {
     const map = {
-      today: ["个人营养计划", dateHeading()],
-      food: ["常用食物库", `${library.itemCount} 条 · USDA FoodData Central`],
-      trends: ["十日趋势", "记录变化，不评判一天"]
+      today: ["今日", dateHeading()],
+      food: ["食物库", `${library.itemCount} 种常用食物`],
+      trends: ["趋势", "最近十天"]
     };
     return map[ui.screen];
   }
@@ -219,21 +223,25 @@
           <strong>${title}</strong>
           <span>${subtitle}</span>
         </div>
-        <button class="profile-button" data-action="open-profile" aria-label="打开个人资料">资料</button>
+        <button class="profile-button" data-action="open-profile" aria-label="打开个人资料">${icon("user-circle")}</button>
       </header>
     `;
   }
 
-  function macroRow(label, value, target, color) {
+  function macroRow(label, value, target) {
     const remaining = Math.max(0, target - value);
     const percentage = clamp((value / target) * 100, 0, 100);
     return `
-      <div class="macro-row">
-        <div class="macro-name">${label}</div>
-        <div class="macro-track" aria-label="${label}已完成 ${Math.round(percentage)}%">
-          <div class="macro-fill" style="width:${percentage}%;background:${color}"></div>
+      <div class="macro-card">
+        <div class="macro-card-head">
+          <span>${label}</span>
+          <small>${Math.round(percentage)}%</small>
         </div>
-        <div class="macro-value"><strong>${formatNumber(remaining, 1)}g</strong> 还差</div>
+        <strong>${formatNumber(remaining, 1)}<small>g</small></strong>
+        <p>今日还差</p>
+        <div class="macro-track" aria-label="${label}已完成 ${Math.round(percentage)}%">
+          <div class="macro-fill" style="width:${percentage}%"></div>
+        </div>
       </div>
     `;
   }
@@ -276,38 +284,52 @@
 
     return `
       <main class="screen" data-screen="today">
-        <p class="page-eyebrow">TODAY / 先看还差多少</p>
-        <h1 class="page-title">今天的重点，<br />是把剩余量吃明白。</h1>
+        <div class="home-intro">
+          <p class="page-eyebrow">GOOD DAY</p>
+          <h1 class="page-title">今天怎么吃，<br />心里有数。</h1>
+          <p class="page-intro">先看剩余，再安排下一餐。</p>
+        </div>
 
         <section class="summary">
-          <div class="summary-label">按当前目标，今天还可以摄入</div>
-          <div class="summary-number">${formatNumber(remainingKcal)}<small>千卡</small></div>
-          <div class="summary-meta">
-            <span>已记录 ${formatNumber(totals.kcal)} / ${formatNumber(targetCalories())} 千卡</span>
-            <span>当前体重 ${formatNumber(state.profile.currentWeight, 1)}kg</span>
+          <div class="summary-head">
+            <div>
+              <span>今日还可摄入</span>
+              <strong>${formatNumber(remainingKcal)}<small>千卡</small></strong>
+            </div>
+            <button class="pill-button" data-action="open-formula">目标说明</button>
           </div>
-          <button class="text-button" data-action="open-formula">目标如何计算？</button>
+          <div class="summary-meta">
+            <div><span>已记录</span><strong>${formatNumber(totals.kcal)}</strong><small>kcal</small></div>
+            <div><span>今日目标</span><strong>${formatNumber(targetCalories())}</strong><small>kcal</small></div>
+            <div><span>当前体重</span><strong>${formatNumber(state.profile.currentWeight, 1)}</strong><small>kg</small></div>
+          </div>
         </section>
 
-        <section class="section">
-          <div class="section-head">
-            <h2>宏量剩余</h2>
-            <span>摄入 / 目标</span>
-          </div>
+        <section class="quick-actions" aria-label="快捷功能">
+          <button data-action="go-food">${icon("salad")}<strong>查食物</strong><span>热量与营养</span></button>
+          <button data-action="open-profile">${icon("scale")}<strong>个人资料</strong><span>体重与目标</span></button>
+          <button data-action="go-trends">${icon("chart-line")}<strong>十日趋势</strong><span>查看变化</span></button>
+        </section>
+
+        <section class="section section-card">
+          <div class="section-head"><h2>宏量剩余</h2><span>今日还差</span></div>
           <div class="macro-list">
-            ${macroRow("碳水", totals.carbs, state.targets.carbs, "#1769e0")}
-            ${macroRow("蛋白质", totals.protein, state.targets.protein, "#008779")}
-            ${macroRow("脂肪", totals.fat, state.targets.fat, "#64748b")}
+            ${macroRow("碳水", totals.carbs, state.targets.carbs)}
+            ${macroRow("蛋白质", totals.protein, state.targets.protein)}
+            ${macroRow("脂肪", totals.fat, state.targets.fat)}
           </div>
           <div class="highlight">
-            <div class="highlight-label">今日提示</div>
-            <h3>蛋白质还有 ${formatNumber(proteinRemaining, 1)}g 的安排空间</h3>
-            <p>下一餐先确定蛋白质来源，再补主食与蔬菜；不需要让每一餐完全相同。</p>
+            ${icon("target-arrow")}
+            <div>
+              <span>下一餐建议</span>
+              <h3>还可安排 ${formatNumber(proteinRemaining, 1)}g 蛋白质</h3>
+              <p>先确定蛋白质来源，再补主食与蔬菜。</p>
+            </div>
           </div>
-          <button class="button primary full camera-cta" data-action="go-food">从食物库记录下一餐</button>
+          <button class="button primary full" data-action="go-food">记录下一餐</button>
         </section>
 
-        <section class="section">
+        <section class="section section-card">
           <div class="section-head">
             <h2>今日餐次</h2>
             <span>${entries.length} 条记录</span>
@@ -338,31 +360,39 @@
     `).join("");
     const rows = visibleFoods.map((food) => `
       <button class="food-row" data-food-id="${food.id}">
+        <div class="food-index-mark" aria-hidden="true">${escapeHtml(food.name.slice(0, 1))}</div>
         <div>
           <h3>${escapeHtml(food.name)}</h3>
-          <p>${food.category} · ${food.state} · 常用 ${food.portion}g<br />C ${food.carbs} · P ${food.protein} · F ${food.fat}</p>
+          <p>${food.state} · 常用 ${food.portion}g<br />碳 ${food.carbs} · 蛋 ${food.protein} · 脂 ${food.fat}</p>
         </div>
         <div class="food-kcal">
           <strong>${food.kcal}</strong>
-          <span>kcal / 100g</span>
+          <span>kcal/100g</span>
         </div>
       </button>
     `).join("");
 
     return `
       <main class="screen" data-screen="food">
-        <p class="page-eyebrow">FOOD INDEX / 检索、称重、记录</p>
-        <h1 class="page-title">先按每 100g 比，<br />再放进你的餐盘。</h1>
-        <p class="page-intro">数据来自 USDA FoodData Central，按每 100g 可食部展示。生重和熟重是不同食物条目，不能在详情里任意切换。</p>
+        <div class="food-intro">
+          <p class="page-eyebrow">FOOD INDEX</p>
+          <h1 class="page-title">想吃什么，搜一搜。</h1>
+          <p class="page-intro">生重和熟重分别计算，请按实际状态选择。</p>
+        </div>
 
         <div class="search-wrap">
+          ${icon("search", "search-icon")}
           <input class="search-input" type="search" value="${escapeHtml(ui.search)}" placeholder="搜索燕麦、鸡胸肉、米饭…" aria-label="搜索食物" data-input="food-search" />
-          ${ui.search ? `<button class="search-clear" data-action="clear-search" aria-label="清空搜索">×</button>` : ""}
+          ${ui.search ? `<button class="search-clear" data-action="clear-search" aria-label="清空搜索">${icon("x")}</button>` : ""}
         </div>
-        <div class="chips" aria-label="食物分类">${chips}</div>
-        <div class="catalog-note"><span>每 100g 营养 · 点击填写实际克数</span><strong>${visibleFoods.length} / ${library.itemCount} 条</strong></div>
-        <div class="food-list">
-          ${rows || `<div class="no-results">没有匹配结果。<br />可以换一个食物名称或分类。</div>`}
+        <div class="food-browser">
+          <div class="chips" aria-label="食物分类">${chips}</div>
+          <div class="catalog-panel">
+            <div class="catalog-note"><span>每 100g 营养</span><strong>${visibleFoods.length} / ${library.itemCount}</strong></div>
+            <div class="food-list">
+              ${rows || `<div class="no-results">没有匹配结果。<br />换一个名称或分类试试。</div>`}
+            </div>
+          </div>
         </div>
       </main>
     `;
@@ -380,16 +410,21 @@
 
     return `
       <main class="screen trends-screen" data-screen="trends">
-        <p class="trend-kicker">TEN DAYS / 一段生活，不是一场考试</p>
-        <h1 class="trend-title">十天里，身体写下<br />一条缓慢的线。</h1>
-
-        <div class="trend-summary">
-          <div class="trend-delta">${delta > 0 ? "+" : "−"}${formatNumber(Math.abs(delta), 1)}<small>kg</small></div>
-          <div class="trend-next">下一次复盘<strong>${nextReviewText}</strong>还有 10 天</div>
+        <div class="trend-intro">
+          <p class="trend-kicker">TEN DAYS</p>
+          <h1 class="trend-title">十天里，身体写下<br />一条缓慢的线。</h1>
+          <p>记录变化，不评判一天。</p>
         </div>
 
-        ${window.renderWeightChart(weights)}
-        <p class="human-note">单日上下并不代表执行失效。把餐食、睡眠和训练一起看，趋势才会说完整的话。</p>
+        <div class="trend-summary">
+          <div><span>十日变化</span><div class="trend-delta">${delta > 0 ? "+" : "−"}${formatNumber(Math.abs(delta), 1)}<small>kg</small></div></div>
+          <div class="trend-next"><span>下一次复盘</span><strong>${nextReviewText}</strong><small>还有 10 天</small></div>
+        </div>
+
+        <section class="chart-card">
+          ${window.renderWeightChart(weights)}
+          <p class="human-note">单日上下不代表执行失效。把餐食、睡眠和训练一起看，趋势才会说完整的话。</p>
+        </section>
 
         <div class="trend-stats">
           <div class="trend-stat"><strong>${weights.length} / 10</strong><span>有记录的日子</span></div>
@@ -397,16 +432,16 @@
           <div class="trend-stat"><strong>${formatNumber(state.profile.currentWeight, 1)}</strong><span>当前体重 kg</span></div>
         </div>
 
-        <section class="section">
+        <section class="section section-card">
           <div class="section-head"><h2>三种营养的节奏</h2><span>近 10 天平均</span></div>
           <div class="rhythm-list">
-            <div class="rhythm-row"><span>碳水</span><div class="rhythm-track"><div class="rhythm-fill" style="width:${completion.carbs}%;background:#d9a719"></div></div><b>${completion.carbs}%</b></div>
-            <div class="rhythm-row"><span>蛋白质</span><div class="rhythm-track"><div class="rhythm-fill" style="width:${completion.protein}%;background:#2398a1"></div></div><b>${completion.protein}%</b></div>
-            <div class="rhythm-row"><span>脂肪</span><div class="rhythm-track"><div class="rhythm-fill" style="width:${completion.fat}%;background:#bd4770"></div></div><b>${completion.fat}%</b></div>
+            <div class="rhythm-row"><span>碳水</span><div class="rhythm-track"><div class="rhythm-fill" style="width:${completion.carbs}%"></div></div><b>${completion.carbs}%</b></div>
+            <div class="rhythm-row"><span>蛋白质</span><div class="rhythm-track"><div class="rhythm-fill" style="width:${completion.protein}%"></div></div><b>${completion.protein}%</b></div>
+            <div class="rhythm-row"><span>脂肪</span><div class="rhythm-track"><div class="rhythm-fill" style="width:${completion.fat}%"></div></div><b>${completion.fat}%</b></div>
           </div>
         </section>
 
-        <section class="section">
+        <section class="section section-card">
           <div class="section-head"><h2>补记今天体重</h2><span>同一天会覆盖旧值</span></div>
           <form class="trend-form" data-form="weight">
             <input name="weight" type="number" min="30" max="300" step="0.1" value="${formatNumber(state.profile.currentWeight, 1)}" aria-label="今天体重" />
@@ -414,15 +449,15 @@
           </form>
         </section>
 
-        <section class="section">
+        <section class="section section-card">
           <div class="section-head"><h2>当前营养目标</h2><span>${escapeHtml(state.targets.source)}</span></div>
           <div class="rhythm-list">
-            <div class="rhythm-row"><span>碳水</span><div class="rhythm-track"><div class="rhythm-fill" style="width:88%;background:#d9a719"></div></div><b>${state.targets.carbs}g</b></div>
-            <div class="rhythm-row"><span>蛋白质</span><div class="rhythm-track"><div class="rhythm-fill" style="width:72%;background:#2398a1"></div></div><b>${state.targets.protein}g</b></div>
-            <div class="rhythm-row"><span>脂肪</span><div class="rhythm-track"><div class="rhythm-fill" style="width:56%;background:#bd4770"></div></div><b>${state.targets.fat}g</b></div>
+            <div class="rhythm-row"><span>碳水</span><div class="rhythm-track"><div class="rhythm-fill" style="width:88%"></div></div><b>${state.targets.carbs}g</b></div>
+            <div class="rhythm-row"><span>蛋白质</span><div class="rhythm-track"><div class="rhythm-fill" style="width:72%"></div></div><b>${state.targets.protein}g</b></div>
+            <div class="rhythm-row"><span>脂肪</span><div class="rhythm-track"><div class="rhythm-fill" style="width:56%"></div></div><b>${state.targets.fat}g</b></div>
           </div>
           ${ui.recalcMessage ? `<div class="recalc-feedback" role="status">${ui.recalcMessage}</div>` : ""}
-          <button class="button primary full" style="margin-top:14px;background:var(--paper-ink)" data-action="recalculate-targets">按当前 ${formatNumber(state.profile.currentWeight, 1)}kg 重新计算</button>
+          <button class="button primary full recalculate-button" data-action="recalculate-targets">按当前 ${formatNumber(state.profile.currentWeight, 1)}kg 重新计算</button>
         </section>
       </main>
     `;
@@ -430,14 +465,14 @@
 
   function renderBottomNav() {
     const items = [
-      ["today", "今日"],
-      ["food", "食物"],
-      ["trends", "趋势"]
+      ["today", "home", "今日"],
+      ["food", "salad", "食物"],
+      ["trends", "chart-line", "趋势"]
     ];
     return `
       <nav class="bottom-nav" aria-label="主导航">
-        ${items.map(([id, label]) => `
-          <button class="nav-button ${ui.screen === id ? "active" : ""}" data-nav="${id}" ${ui.screen === id ? 'aria-current="page"' : ""}>${label}</button>
+        ${items.map(([id, iconName, label]) => `
+          <button class="nav-button ${ui.screen === id ? "active" : ""}" data-nav="${id}" ${ui.screen === id ? 'aria-current="page"' : ""}>${icon(iconName)}<span>${label}</span></button>
         `).join("")}
       </nav>
     `;
@@ -456,7 +491,7 @@
             <h2>${escapeHtml(food.name)}</h2>
             <p>${food.kcal} kcal / 100g · C ${food.carbs} · P ${food.protein} · F ${food.fat}</p>
           </div>
-          <button class="close-button" data-action="close-modal" aria-label="关闭">×</button>
+          <button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button>
         </div>
         <div class="field-grid">
           <div class="field">
@@ -521,7 +556,7 @@
             <h2>修改${escapeHtml(entry.name)}</h2>
             <p>${formatNumber(food.kcal)} kcal / 100g · ${escapeHtml(food.state)}</p>
           </div>
-          <button class="close-button" data-action="close-modal" aria-label="关闭">×</button>
+          <button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button>
         </div>
         <div class="field-grid">
           <div class="field">
@@ -562,7 +597,7 @@
         <div class="sheet-handle"></div>
         <div class="sheet-head">
           <div><h2>目标如何计算</h2><p>当前记录方案 · 不是医疗处方</p></div>
-          <button class="close-button" data-action="close-modal" aria-label="关闭">×</button>
+          <button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button>
         </div>
         <p class="formula-note">
           当前档位为「${activity.label}」。视频方案按当前体重乘以对应系数：男性碳水 ${activity.carbs.male}、蛋白质 ${activity.protein}、脂肪 ${activity.fat.male}；女性碳水 ${activity.carbs.female}、蛋白质 ${activity.protein}、脂肪 ${activity.fat.female}。
@@ -585,7 +620,7 @@
         <div class="sheet-handle"></div>
         <div class="sheet-head">
           <div><h2>个人资料</h2><p>保存在当前浏览器，不上传云端</p></div>
-          <button class="close-button" data-action="close-modal" aria-label="关闭">×</button>
+          <button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button>
         </div>
         <div class="field-grid">
           <div class="field">
@@ -891,6 +926,8 @@
           render();
         } else if (action === "go-food") {
           navigate("food");
+        } else if (action === "go-trends") {
+          navigate("trends");
         } else if (action === "clear-search") {
           ui.search = "";
           render();
