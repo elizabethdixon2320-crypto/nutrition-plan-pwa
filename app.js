@@ -2,26 +2,11 @@
   "use strict";
 
   const STORAGE_KEY = "personal-nutrition-plan-v1";
-  const { foods, activityLevels, categories } = window.NUTRITION_DATA;
+  const { foods, activityLevels, categories, library } = window.NUTRITION_DATA;
   const foodById = new Map(foods.map((food) => [food.id, food]));
   const appRoot = document.getElementById("app");
 
-  const commonFoodIds = new Set([
-    "oats", "egg", "rice_cooked", "chicken_breast", "shrimp",
-    "broccoli", "blueberry", "milk", "mixed_nuts"
-  ]);
-
-  const recognitionAdapter = {
-    mode: "mock",
-    async analyze(file) {
-      await new Promise((resolve) => setTimeout(resolve, 850));
-      return [
-        { foodId: "chicken_breast", grams: 150, confidence: "较高" },
-        { foodId: "rice_cooked", grams: 180, confidence: "中等" },
-        { foodId: "broccoli", grams: 120, confidence: "中等" }
-      ];
-    }
-  };
+  const commonFoodIds = new Set(foods.filter((food) => food.common).map((food) => food.id));
 
   function toDateKey(date) {
     const year = date.getFullYear();
@@ -70,7 +55,7 @@
     };
   }
 
-  function makeLog(foodId, grams, meal, source = "manual", measureOverride = null) {
+  function makeLog(foodId, grams, meal, source = "manual") {
     const food = foodById.get(foodId);
     return {
       id: makeId("log"),
@@ -80,7 +65,7 @@
       foodId,
       name: food.name,
       grams: Number(grams),
-      measure: measureOverride || food.state,
+      measure: food.state,
       ...nutrientsFor(food, grams)
     };
   }
@@ -103,7 +88,7 @@
     ].map((item) => ({ ...item, date: today }));
 
     return {
-      version: 1,
+      version: 2,
       profile: {
         sex: "male",
         startingWeight: 85,
@@ -127,7 +112,21 @@
   function loadState() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (saved && saved.version === 1) return saved;
+      if (saved && [1, 2].includes(saved.version)) {
+        saved.logs = (saved.logs || []).map((entry) => {
+          const food = foodById.get(entry.foodId);
+          if (!food) return entry;
+          return {
+            ...entry,
+            name: food.name,
+            measure: food.state,
+            ...nutrientsFor(food, entry.grams)
+          };
+        });
+        saved.version = 2;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+        return saved;
+      }
     } catch (error) {
       console.warn("本地记录读取失败，已恢复演示数据。", error);
     }
@@ -181,13 +180,7 @@
     search: "",
     category: "全部",
     selectedFoodId: null,
-    foodDraft: { grams: 100, meal: "午餐", measure: "熟重" },
-    photoStatus: "idle",
-    photoUrl: null,
-    photoFile: null,
-    recognition: [],
-    oilAdded: false,
-    sauceAdded: false,
+    foodDraft: { grams: 100, meal: "午餐" },
     toast: "",
     recalcMessage: "",
     deferredInstallPrompt: null,
@@ -210,8 +203,7 @@
   function pageMeta() {
     const map = {
       today: ["个人营养计划", dateHeading()],
-      food: ["食物热量表", `${foods.length} 条本地演示数据`],
-      photo: ["拍照估算", recognitionAdapter.mode === "mock" ? "当前使用模拟识别" : "识别服务已连接"],
+      food: ["常用食物库", `${library.itemCount} 条 · USDA FoodData Central`],
       trends: ["十日趋势", "记录变化，不评判一天"]
     };
     return map[ui.screen];
@@ -243,23 +235,6 @@
       </div>
     `;
   }
-
-  const defaultPhotoDataUrl = `data:image/svg+xml,${encodeURIComponent(`
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop stop-color="#dfe9f5"/>
-          <stop offset="1" stop-color="#f4ead8"/>
-        </linearGradient>
-      </defs>
-      <rect width="900" height="620" fill="url(#bg)"/>
-      <circle cx="450" cy="310" r="220" fill="#fdfbf7" stroke="#d3d9df" stroke-width="12"/>
-      <path d="M300 250c85-70 218-62 300 14-54 52-102 92-156 144-58-47-98-91-144-158Z" fill="#d7a450"/>
-      <circle cx="340" cy="332" r="65" fill="#84aa69"/>
-      <circle cx="558" cy="325" r="72" fill="#d78b58"/>
-      <text x="450" y="565" text-anchor="middle" font-family="system-ui,sans-serif" font-size="26" fill="#526273">选择或拍摄一张餐食照片</text>
-    </svg>
-  `)}`;
 
   function renderToday() {
     const entries = todayLogs();
@@ -324,7 +299,7 @@
             <h3>蛋白质还有 ${formatNumber(proteinRemaining, 1)}g 的安排空间</h3>
             <p>下一餐先确定蛋白质来源，再补主食与蔬菜；不需要让每一餐完全相同。</p>
           </div>
-          <button class="button primary full camera-cta" data-action="go-photo">拍照记录下一餐</button>
+          <button class="button primary full camera-cta" data-action="go-food">从食物库记录下一餐</button>
         </section>
 
         <section class="section">
@@ -345,7 +320,8 @@
         ui.category === "全部" ||
         (ui.category === "常用" && commonFoodIds.has(food.id)) ||
         food.category === ui.category;
-      const searchMatch = !normalized || food.name.toLowerCase().includes(normalized);
+      const searchText = [food.name, food.state, ...(food.aliases || [])].join(" ").toLowerCase();
+      const searchMatch = !normalized || searchText.includes(normalized);
       return categoryMatch && searchMatch;
     });
   }
@@ -358,7 +334,7 @@
     const rows = visibleFoods.map((food) => `
       <button class="food-row" data-food-id="${food.id}">
         <div>
-          <h3>${food.name}</h3>
+          <h3>${escapeHtml(food.name)}</h3>
           <p>${food.category} · ${food.state} · 常用 ${food.portion}g<br />C ${food.carbs} · P ${food.protein} · F ${food.fat}</p>
         </div>
         <div class="food-kcal">
@@ -372,106 +348,17 @@
       <main class="screen" data-screen="food">
         <p class="page-eyebrow">FOOD INDEX / 检索、称重、记录</p>
         <h1 class="page-title">先按每 100g 比，<br />再放进你的餐盘。</h1>
-        <p class="page-intro">数值用于演示记录结构；实际使用请以食品包装或经授权数据库为准。</p>
+        <p class="page-intro">数据来自 USDA FoodData Central，按每 100g 可食部展示。生重和熟重是不同食物条目，不能在详情里任意切换。</p>
 
         <div class="search-wrap">
           <input class="search-input" type="search" value="${escapeHtml(ui.search)}" placeholder="搜索燕麦、鸡胸肉、米饭…" aria-label="搜索食物" data-input="food-search" />
           ${ui.search ? `<button class="search-clear" data-action="clear-search" aria-label="清空搜索">×</button>` : ""}
         </div>
         <div class="chips" aria-label="食物分类">${chips}</div>
-        <div class="catalog-note"><span>每 100g 营养 · 点击可改克数</span><strong>${visibleFoods.length} 条</strong></div>
+        <div class="catalog-note"><span>每 100g 营养 · 点击填写实际克数</span><strong>${visibleFoods.length} / ${library.itemCount} 条</strong></div>
         <div class="food-list">
           ${rows || `<div class="no-results">没有匹配结果。<br />可以换一个食物名称或分类。</div>`}
         </div>
-      </main>
-    `;
-  }
-
-  function photoTotals() {
-    const items = ui.recognition.map((item) => {
-      const food = foodById.get(item.foodId);
-      return nutrientsFor(food, item.grams);
-    });
-    if (ui.oilAdded) items.push(nutrientsFor(foodById.get("cooking_oil"), 5));
-    if (ui.sauceAdded) items.push(nutrientsFor(foodById.get("sauce"), 15));
-    return sumEntries(items);
-  }
-
-  function renderResultSummary(totals) {
-    return `
-      <div class="result-summary" data-role="photo-summary">
-        <div><strong data-photo-total="kcal">${formatNumber(totals.kcal)}</strong><span>千卡</span></div>
-        <div><strong data-photo-total="carbs">${formatNumber(totals.carbs, 1)}g</strong><span>碳水</span></div>
-        <div><strong data-photo-total="protein">${formatNumber(totals.protein, 1)}g</strong><span>蛋白质</span></div>
-        <div><strong data-photo-total="fat">${formatNumber(totals.fat, 1)}g</strong><span>脂肪</span></div>
-      </div>
-    `;
-  }
-
-  function renderPhoto() {
-    const preview = ui.photoUrl || defaultPhotoDataUrl;
-    const hasResults = ui.photoStatus === "results";
-    const totals = photoTotals();
-    const rows = ui.recognition.map((item, index) => {
-      const food = foodById.get(item.foodId);
-      return `
-        <div class="recognized-row">
-          <div>
-            <h3>${food.name}</h3>
-            <p>${food.state} · 置信度 ${item.confidence}</p>
-          </div>
-          <label class="gram-field">
-            <input type="number" min="0" max="2000" value="${item.grams}" data-recognition-index="${index}" aria-label="${food.name}克数" />
-            <span>g</span>
-          </label>
-        </div>
-      `;
-    }).join("");
-
-    return `
-      <main class="screen" data-screen="photo">
-        <p class="page-eyebrow">CAMERA / 先估一遍，再由你定稿</p>
-        <h1 class="page-title">照片是起点，<br />不是答案。</h1>
-        <div class="photo-notice"><strong>照片只能估算，克数请确认。</strong><br />混合菜、食用油与酱料最容易被遗漏；当前为模拟识别，不会上传照片。</div>
-
-        <div class="photo-stage">
-          <img src="${preview}" alt="待分析的餐食照片" />
-          <span class="mock-badge">MOCK</span>
-        </div>
-        <input class="hidden-file" id="photo-file" type="file" accept="image/*" capture="environment" />
-
-        ${ui.photoStatus === "analyzing" ? `
-          <div class="analysis-progress" role="status">
-            <strong>正在拆分餐盘里的候选食物…</strong>
-            <p>先估计主食、蛋白质和蔬菜；完成后仍需你确认。</p>
-            <div class="progress-line"></div>
-          </div>
-        ` : ""}
-
-        ${!hasResults && ui.photoStatus !== "analyzing" ? `
-          <div class="button-row" style="margin-top:14px">
-            <button class="button primary" data-action="analyze-photo">模拟分析</button>
-            <button class="button secondary" data-action="choose-photo">选择照片</button>
-          </div>
-          <button class="text-button" data-action="use-demo-photo">恢复演示照片</button>
-        ` : ""}
-
-        ${hasResults ? `
-          ${renderResultSummary(totals)}
-          <div class="recognized-list">${rows}</div>
-          <div class="option-list">
-            <button class="option-row" data-action="toggle-oil">
-              <span>补记食用油 <small>5g</small></span>
-              <i class="switch ${ui.oilAdded ? "on" : ""}" aria-hidden="true"></i>
-            </button>
-            <button class="option-row" data-action="toggle-sauce">
-              <span>补记酱料 <small>约 15g</small></span>
-              <i class="switch ${ui.sauceAdded ? "on" : ""}" aria-hidden="true"></i>
-            </button>
-          </div>
-          <button class="button primary full" data-action="save-photo-meal">确认并加入午餐</button>
-          <button class="text-button" data-action="reanalyze-photo">换一张重新分析</button>
-        ` : ""}
       </main>
     `;
   }
@@ -540,7 +427,6 @@
     const items = [
       ["today", "今日"],
       ["food", "食物"],
-      ["photo", "拍照"],
       ["trends", "趋势"]
     ];
     return `
@@ -562,23 +448,20 @@
         <div class="sheet-handle"></div>
         <div class="sheet-head">
           <div>
-            <h2>${food.name}</h2>
+            <h2>${escapeHtml(food.name)}</h2>
             <p>${food.kcal} kcal / 100g · C ${food.carbs} · P ${food.protein} · F ${food.fat}</p>
           </div>
           <button class="close-button" data-action="close-modal" aria-label="关闭">×</button>
         </div>
         <div class="field-grid">
           <div class="field">
-            <label for="food-grams">实际克数</label>
+            <label for="food-grams">实际克数（${food.state}）</label>
             <input id="food-grams" type="number" min="0" max="2000" value="${ui.foodDraft.grams}" data-input="food-grams" />
           </div>
-          <div class="field">
-            <label>计量状态</label>
-            <div class="segment">
-              ${["生重", "熟重", "可食部"].map((measure) => `
-                <button class="${ui.foodDraft.measure === measure ? "active" : ""}" data-measure="${measure}">${measure}</button>
-              `).join("")}
-            </div>
+          <div class="measure-locked" role="note">
+            <span>计量状态已锁定</span>
+            <strong>${food.state}</strong>
+            <small>生、熟营养密度不同。如需另一种状态，请返回搜索对应条目。</small>
           </div>
           <div class="field">
             <label for="food-meal">加入餐次</label>
@@ -592,6 +475,11 @@
           <div><strong data-food-preview="carbs">${nutrition.carbs}g</strong><span>碳水</span></div>
           <div><strong data-food-preview="protein">${nutrition.protein}g</strong><span>蛋白质</span></div>
           <div><strong data-food-preview="fat">${nutrition.fat}g</strong><span>脂肪</span></div>
+        </div>
+        <div class="food-source">
+          <span>数据来源</span>
+          <strong>${escapeHtml(food.source)} · FDC ${food.sourceId}</strong>
+          <small>${escapeHtml(food.sourceDescription)} · ${escapeHtml(food.energyMethod)}</small>
         </div>
         <button class="button primary full" data-action="add-food">加入${ui.foodDraft.meal}</button>
       </section>
@@ -672,7 +560,6 @@
     const screens = {
       today: renderToday,
       food: renderFood,
-      photo: renderPhoto,
       trends: renderTrends
     };
     appRoot.innerHTML = `
@@ -702,8 +589,7 @@
     ui.selectedFoodId = foodId;
     ui.foodDraft = {
       grams: food.portion,
-      meal: "午餐",
-      measure: ["生重", "熟重", "可食部"].includes(food.state) ? food.state : "可食部"
+      meal: "午餐"
     };
     ui.modal = "food";
     render();
@@ -723,53 +609,6 @@
       const node = document.querySelector(`[data-food-preview="${key}"]`);
       if (node) node.textContent = value;
     });
-  }
-
-  function updatePhotoSummary() {
-    const totals = photoTotals();
-    const values = {
-      kcal: formatNumber(totals.kcal),
-      carbs: `${formatNumber(totals.carbs, 1)}g`,
-      protein: `${formatNumber(totals.protein, 1)}g`,
-      fat: `${formatNumber(totals.fat, 1)}g`
-    };
-    Object.entries(values).forEach(([key, value]) => {
-      const node = document.querySelector(`[data-photo-total="${key}"]`);
-      if (node) node.textContent = value;
-    });
-  }
-
-  async function analyzePhoto() {
-    ui.photoStatus = "analyzing";
-    render();
-    try {
-      ui.recognition = await recognitionAdapter.analyze(ui.photoFile);
-      ui.oilAdded = false;
-      ui.sauceAdded = false;
-      ui.photoStatus = "results";
-      render();
-    } catch (error) {
-      console.error("识别失败", error);
-      ui.photoStatus = "ready";
-      showToast("模拟分析失败，请再试一次");
-    }
-  }
-
-  function savePhotoMeal() {
-    const newLogs = ui.recognition.map((item) => makeLog(item.foodId, item.grams, "午餐", "photo"));
-    if (ui.oilAdded) newLogs.push(makeLog("cooking_oil", 5, "午餐", "photo"));
-    if (ui.sauceAdded) newLogs.push(makeLog("sauce", 15, "午餐", "photo"));
-    state.logs.push(...newLogs);
-    state.recentFoodIds = [
-      ...new Set([...ui.recognition.map((item) => item.foodId), ...state.recentFoodIds])
-    ].slice(0, 12);
-    saveState();
-    ui.photoStatus = "idle";
-    ui.recognition = [];
-    ui.oilAdded = false;
-    ui.sauceAdded = false;
-    ui.screen = "today";
-    showToast(`午餐已记录 · ${formatNumber(sumEntries(newLogs).kcal)} 千卡`);
   }
 
   function saveWeight(value) {
@@ -879,39 +718,11 @@
       });
     }
 
-    document.querySelectorAll("[data-measure]").forEach((button) => {
-      button.addEventListener("click", () => {
-        ui.foodDraft.measure = button.dataset.measure;
-        render();
-      });
-    });
-
-    document.querySelectorAll("[data-recognition-index]").forEach((input) => {
-      input.addEventListener("input", (event) => {
-        const index = Number(input.dataset.recognitionIndex);
-        ui.recognition[index].grams = Math.max(0, Number(event.target.value) || 0);
-        updatePhotoSummary();
-      });
-    });
-
     const weightForm = document.querySelector('[data-form="weight"]');
     if (weightForm) {
       weightForm.addEventListener("submit", (event) => {
         event.preventDefault();
         saveWeight(new FormData(weightForm).get("weight"));
-      });
-    }
-
-    const fileInput = document.getElementById("photo-file");
-    if (fileInput) {
-      fileInput.addEventListener("change", (event) => {
-        const [file] = event.target.files;
-        if (!file) return;
-        if (ui.photoUrl && ui.photoUrl.startsWith("blob:")) URL.revokeObjectURL(ui.photoUrl);
-        ui.photoFile = file;
-        ui.photoUrl = URL.createObjectURL(file);
-        ui.photoStatus = "ready";
-        render();
       });
     }
 
@@ -927,45 +738,18 @@
         } else if (action === "close-modal") {
           ui.modal = null;
           render();
-        } else if (action === "go-photo") {
-          navigate("photo");
+        } else if (action === "go-food") {
+          navigate("food");
         } else if (action === "clear-search") {
           ui.search = "";
           render();
         } else if (action === "add-food") {
-          const log = makeLog(
-            ui.selectedFoodId,
-            ui.foodDraft.grams,
-            ui.foodDraft.meal,
-            "manual",
-            ui.foodDraft.measure
-          );
+          const log = makeLog(ui.selectedFoodId, ui.foodDraft.grams, ui.foodDraft.meal, "manual");
           state.logs.push(log);
           state.recentFoodIds = [ui.selectedFoodId, ...state.recentFoodIds.filter((id) => id !== ui.selectedFoodId)].slice(0, 12);
           saveState();
           ui.modal = null;
           showToast(`${log.name} ${formatNumber(log.grams)}g 已加入${log.meal}`);
-        } else if (action === "choose-photo") {
-          fileInput?.click();
-        } else if (action === "use-demo-photo") {
-          ui.photoUrl = null;
-          ui.photoFile = null;
-          ui.photoStatus = "ready";
-          render();
-        } else if (action === "analyze-photo") {
-          await analyzePhoto();
-        } else if (action === "toggle-oil") {
-          ui.oilAdded = !ui.oilAdded;
-          render();
-        } else if (action === "toggle-sauce") {
-          ui.sauceAdded = !ui.sauceAdded;
-          render();
-        } else if (action === "save-photo-meal") {
-          savePhotoMeal();
-        } else if (action === "reanalyze-photo") {
-          ui.photoStatus = "ready";
-          ui.recognition = [];
-          render();
         } else if (action === "recalculate-targets") {
           state.targets = calculateTargets(state.profile.currentWeight, state.profile.sex, state.profile.activityId);
           saveState();
