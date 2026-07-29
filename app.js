@@ -181,6 +181,8 @@
     category: "全部",
     selectedFoodId: null,
     foodDraft: { grams: 100, meal: "午餐" },
+    selectedLogId: null,
+    logDraft: { grams: 100, meal: "午餐" },
     toast: "",
     recalcMessage: "",
     deferredInstallPrompt: null,
@@ -248,14 +250,17 @@
       const mealTotal = sumEntries(mealEntries);
       const rows = mealEntries.length
         ? mealEntries.map((entry) => `
-            <div class="meal-entry">
+            <button class="meal-entry" data-log-id="${escapeHtml(entry.id)}" aria-label="修改${escapeHtml(entry.name)}记录">
               <div class="meal-mark" aria-hidden="true">${escapeHtml(entry.name.slice(0, 1))}</div>
               <div>
                 <h3>${escapeHtml(entry.name)}</h3>
                 <p>${formatNumber(entry.grams)}g · ${escapeHtml(entry.measure)} · ${entry.source === "photo" ? "照片确认" : "手动记录"}</p>
               </div>
-              <div class="kcal">${formatNumber(entry.kcal)} kcal</div>
-            </div>
+              <div class="meal-entry-side">
+                <div class="kcal">${formatNumber(entry.kcal)} kcal</div>
+                <span>修改</span>
+              </div>
+            </button>
           `).join("")
         : `<div class="empty-meal">还没有记录</div>`;
       return `
@@ -486,6 +491,69 @@
     `;
   }
 
+  function foodForLog(entry) {
+    const currentFood = foodById.get(entry.foodId);
+    if (currentFood) return currentFood;
+    const ratio = 100 / Math.max(1, Number(entry.grams) || 1);
+    return {
+      name: entry.name,
+      state: entry.measure || "记录重量",
+      kcal: Number(entry.kcal || 0) * ratio,
+      carbs: Number(entry.carbs || 0) * ratio,
+      protein: Number(entry.protein || 0) * ratio,
+      fat: Number(entry.fat || 0) * ratio,
+      source: "历史记录",
+      sourceDescription: "原食物条目已不在当前食物库中"
+    };
+  }
+
+  function logModal() {
+    const entry = state.logs.find((item) => item.id === ui.selectedLogId);
+    if (!entry) return "";
+    const food = foodForLog(entry);
+    const nutrition = nutrientsFor(food, ui.logDraft.grams);
+    return `
+      <div class="scrim" data-action="close-modal"></div>
+      <section class="sheet" role="dialog" aria-modal="true" aria-label="修改${escapeHtml(entry.name)}记录">
+        <div class="sheet-handle"></div>
+        <div class="sheet-head">
+          <div>
+            <h2>修改${escapeHtml(entry.name)}</h2>
+            <p>${formatNumber(food.kcal)} kcal / 100g · ${escapeHtml(food.state)}</p>
+          </div>
+          <button class="close-button" data-action="close-modal" aria-label="关闭">×</button>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="log-grams">实际克数（${escapeHtml(food.state)}）</label>
+            <input id="log-grams" type="number" min="1" max="2000" value="${ui.logDraft.grams}" data-input="log-grams" />
+          </div>
+          <div class="measure-locked" role="note">
+            <span>计量状态已锁定</span>
+            <strong>${escapeHtml(food.state)}</strong>
+            <small>修改克数会按当前食物库自动重算热量和三大营养素。</small>
+          </div>
+          <div class="field">
+            <label for="log-meal">所属餐次</label>
+            <select id="log-meal" data-input="log-meal">
+              ${["早餐", "午餐", "晚餐", "加餐"].map((meal) => `<option ${ui.logDraft.meal === meal ? "selected" : ""}>${meal}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <div class="nutrition-preview" data-role="log-preview">
+          <div><strong data-log-preview="kcal">${nutrition.kcal}</strong><span>千卡</span></div>
+          <div><strong data-log-preview="carbs">${nutrition.carbs}g</strong><span>碳水</span></div>
+          <div><strong data-log-preview="protein">${nutrition.protein}g</strong><span>蛋白质</span></div>
+          <div><strong data-log-preview="fat">${nutrition.fat}g</strong><span>脂肪</span></div>
+        </div>
+        <div class="edit-actions">
+          <button class="button primary full" data-action="save-log">保存修改</button>
+          <button class="button danger full" data-action="delete-log">删除这条记录</button>
+        </div>
+      </section>
+    `;
+  }
+
   function formulaModal() {
     const activity = activityLevels.find((item) => item.id === state.profile.activityId);
     return `
@@ -551,6 +619,7 @@
 
   function renderModal() {
     if (ui.modal === "food") return foodModal();
+    if (ui.modal === "log") return logModal();
     if (ui.modal === "formula") return formulaModal();
     if (ui.modal === "profile") return profileModal();
     return "";
@@ -595,6 +664,18 @@
     render();
   }
 
+  function openLog(logId) {
+    const entry = state.logs.find((item) => item.id === logId);
+    if (!entry) return;
+    ui.selectedLogId = logId;
+    ui.logDraft = {
+      grams: Number(entry.grams),
+      meal: entry.meal
+    };
+    ui.modal = "log";
+    render();
+  }
+
   function updateFoodPreview() {
     const food = foodById.get(ui.selectedFoodId);
     if (!food) return;
@@ -609,6 +690,56 @@
       const node = document.querySelector(`[data-food-preview="${key}"]`);
       if (node) node.textContent = value;
     });
+  }
+
+  function updateLogPreview() {
+    const entry = state.logs.find((item) => item.id === ui.selectedLogId);
+    if (!entry) return;
+    const nutrition = nutrientsFor(foodForLog(entry), ui.logDraft.grams);
+    const values = {
+      kcal: nutrition.kcal,
+      carbs: `${nutrition.carbs}g`,
+      protein: `${nutrition.protein}g`,
+      fat: `${nutrition.fat}g`
+    };
+    Object.entries(values).forEach(([key, value]) => {
+      const node = document.querySelector(`[data-log-preview="${key}"]`);
+      if (node) node.textContent = value;
+    });
+  }
+
+  function saveLog() {
+    const grams = Number(ui.logDraft.grams);
+    if (!Number.isFinite(grams) || grams <= 0 || grams > 2000) {
+      showToast("请输入 1–2000g 之间的克数");
+      return;
+    }
+    const index = state.logs.findIndex((item) => item.id === ui.selectedLogId);
+    if (index < 0) return;
+    const current = state.logs[index];
+    const food = foodForLog(current);
+    state.logs[index] = {
+      ...current,
+      name: food.name,
+      grams,
+      meal: ui.logDraft.meal,
+      measure: food.state,
+      ...nutrientsFor(food, grams)
+    };
+    saveState();
+    ui.modal = null;
+    showToast(`${food.name}已更新为 ${formatNumber(grams)}g · ${ui.logDraft.meal}`);
+  }
+
+  function deleteLog() {
+    const entry = state.logs.find((item) => item.id === ui.selectedLogId);
+    if (!entry) return;
+    const confirmed = window.confirm(`确定删除“${entry.name} ${formatNumber(entry.grams)}g”这条记录吗？`);
+    if (!confirmed) return;
+    state.logs = state.logs.filter((item) => item.id !== entry.id);
+    saveState();
+    ui.modal = null;
+    showToast(`${entry.name}记录已删除`);
   }
 
   function saveWeight(value) {
@@ -688,6 +819,10 @@
       button.addEventListener("click", () => openFood(button.dataset.foodId));
     });
 
+    document.querySelectorAll("[data-log-id]").forEach((button) => {
+      button.addEventListener("click", () => openLog(button.dataset.logId));
+    });
+
     const searchInput = document.querySelector('[data-input="food-search"]');
     if (searchInput) {
       searchInput.addEventListener("input", (event) => {
@@ -714,6 +849,22 @@
     if (foodMeal) {
       foodMeal.addEventListener("change", (event) => {
         ui.foodDraft.meal = event.target.value;
+        render();
+      });
+    }
+
+    const logGrams = document.querySelector('[data-input="log-grams"]');
+    if (logGrams) {
+      logGrams.addEventListener("input", (event) => {
+        ui.logDraft.grams = Number(event.target.value);
+        updateLogPreview();
+      });
+    }
+
+    const logMeal = document.querySelector('[data-input="log-meal"]');
+    if (logMeal) {
+      logMeal.addEventListener("change", (event) => {
+        ui.logDraft.meal = event.target.value;
         render();
       });
     }
@@ -750,6 +901,10 @@
           saveState();
           ui.modal = null;
           showToast(`${log.name} ${formatNumber(log.grams)}g 已加入${log.meal}`);
+        } else if (action === "save-log") {
+          saveLog();
+        } else if (action === "delete-log") {
+          deleteLog();
         } else if (action === "recalculate-targets") {
           state.targets = calculateTargets(state.profile.currentWeight, state.profile.sex, state.profile.activityId);
           saveState();
