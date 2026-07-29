@@ -255,13 +255,20 @@ p { text-wrap: pretty; }
 .meal-group-head strong { font-size: 14px; }
 .meal-group-head span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .meal-entry {
+  width: 100%;
   display: grid;
   grid-template-columns: 48px 1fr auto;
   gap: 11px;
   align-items: center;
   min-height: 66px;
   padding: 7px 0 11px;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
 }
+.meal-entry:hover h3 { color: var(--blue); }
 .meal-entry img {
   width: 48px;
   height: 48px;
@@ -285,6 +292,8 @@ p { text-wrap: pretty; }
 .meal-entry h3 { margin: 0; font-size: 14px; }
 .meal-entry p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .meal-entry .kcal { color: #425166; font-size: 12px; font-variant-numeric: tabular-nums; }
+.meal-entry-side { display: grid; gap: 4px; justify-items: end; }
+.meal-entry-side span { color: var(--blue); font-size: 10px; font-weight: 750; }
 .empty-meal { padding: 4px 0 14px; color: var(--quiet); font-size: 12px; }
 
 .search-wrap { position: relative; margin-bottom: 12px; }
@@ -783,6 +792,7 @@ p { text-wrap: pretty; }
   line-height: 1.65;
 }
 .settings-actions { display: grid; gap: 9px; margin-top: 18px; }
+.edit-actions { display: grid; gap: 9px; }
 .microcopy { margin: 12px 0 0; color: var(--quiet); font-size: 11px; line-height: 1.6; }
 
 .toast {
