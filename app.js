@@ -5,6 +5,7 @@
   const { foods, categories, library } = window.NUTRITION_DATA;
   const planner = window.NutritionPlanner;
   const mealPlanner = window.MealPlanner;
+  const recipePlanner = window.RecipePlanner;
   const foodById = new Map(foods.map((food) => [food.id, food]));
   const appRoot = document.getElementById("app");
 
@@ -117,6 +118,7 @@
       },
       plan: null,
       mealSchedule: { defaultMeals: mealPlanner.preset(3), byDate: {} },
+      recipeDrafts: {},
       logs: breakfast,
       weights: seedWeights(),
       historicalCompletion: { carbs: 83, protein: 91, fat: 80 },
@@ -142,6 +144,7 @@
         saved.profile = { age: null, heightCm: null, bodyFatPct: null, formula: "auto", dailyActivity: "sedentary", trainingDays: null, trainingMinutes: null, goal: "lose", ...saved.profile };
         saved.plan = saved.plan || null;
         saved.mealSchedule = saved.mealSchedule || { defaultMeals: mealPlanner.preset(3), byDate: {} };
+        saved.recipeDrafts = saved.recipeDrafts || {};
         // Keep additive storage changes readable by an older cached app shell.
         saved.version = 2;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
@@ -225,6 +228,16 @@
     mealAsDefault: false,
     preferredMeal: null,
     renderedDate: toDateKey(new Date()),
+    recipeMeal: null,
+    recipeDate: null,
+    recipeMode: "remaining",
+    recipeTemplate: "",
+    recipeItems: [],
+    recipeErrors: [],
+    recipeCapped: [],
+    recipeBasis: "",
+    replacementIndex: null,
+    replacementSearch: "",
     deferredInstallPrompt: null,
     online: navigator.onLine
   };
@@ -304,7 +317,7 @@
               <div class="meal-mark" aria-hidden="true">${escapeHtml(entry.name.slice(0, 1))}</div>
               <div>
                 <h3>${escapeHtml(entry.name)}</h3>
-                <p>${formatNumber(entry.grams)}g · ${escapeHtml(entry.measure)} · ${entry.source === "photo" ? "照片确认" : "手动记录"}</p>
+                <p>${formatNumber(entry.grams)}g · ${escapeHtml(entry.measure)} · ${entry.source === "photo" ? "照片确认" : entry.source === "recommendation" ? "推荐方案记录" : "手动记录"}</p>
               </div>
               <div class="meal-entry-side">
                 <div class="kcal">${formatNumber(entry.kcal)} kcal</div>
@@ -320,6 +333,7 @@
             <span>${formatNumber(mealTotal.kcal)} kcal</span>
           </div>
           ${mealTarget ? mealBudget(mealTarget, mealTotal) : `<p class="microcopy">${isPlanned ? "完善个人资料后，将自动生成本餐营养目标。" : "仍计入每日总量，不额外增加目标；点击记录可移到计划内餐次。"}</p>`}
+          ${mealTarget ? `<button class="button primary full recipe-open-button" data-action="open-recipe" data-meal="${escapeHtml(meal)}">推荐吃什么 · 自动算克数</button>` : ""}
           ${rows}
           ${isPlanned ? `<button class="button secondary full meal-record-button" data-action="record-meal" data-meal="${escapeHtml(meal)}">为${escapeHtml(meal)}添加食物</button>` : ""}
         </section>
@@ -806,12 +820,179 @@
     showToast(`${date === toDateKey(new Date()) ? "今日" : date}已安排 ${checked.meals.length} 餐${ui.mealAsDefault ? "，并设为默认" : ""}；食物记录已保留`);
   }
 
+  function recipeContext() {
+    if (!state.plan || ui.recipeDate !== toDateKey(new Date())) return { error: "日期或每日目标已变化，请关闭后重新打开推荐。" };
+    const allocated = mealPlanner.allocate({ ...state.targets, kcal: targetCalories() }, mealPlanFor());
+    const fullTarget = allocated.meals.find((meal) => meal.name === ui.recipeMeal);
+    if (!fullTarget) return { error: "该餐次不在今天的计划内，请重新选择。" };
+    const recorded = todayLogs().filter((entry) => entry.meal === ui.recipeMeal);
+    const consumed = sumEntries(recorded);
+    const target = Object.fromEntries(["kcal", "protein", "carbs", "fat"].map((key) => [key, round(Math.max(0, fullTarget[key] - (ui.recipeMode === "remaining" ? consumed[key] : 0)), key === "kcal" ? 0 : 1)]));
+    return { target, fullTarget, consumed, recorded, blocked: target.kcal < 100 ? "当前可分配热量不足 100 kcal，暂不自动配整餐。可查看整餐方案，或直接手动记录实际吃的食物，无需为凑数继续添加。" : "" };
+  }
+
+  function recipeKey() { return `${ui.recipeDate}|${ui.recipeMeal}|${ui.recipeMode}`; }
+
+  function latestStoredState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+      if (saved && [1, 2, 3].includes(saved.version) && Array.isArray(saved.logs) && saved.profile && saved.targets) return { ...state, ...saved };
+    } catch (error) { console.warn("无法读取其他页面的最新记录。", error); }
+    return state;
+  }
+
+  function rememberRecipe() {
+    const context = recipeContext();
+    const summary = recipePlanner.summarize(foods, ui.recipeItems);
+    if (context.error || context.blocked || !summary.ok) return;
+    // A preview saves only its own draft, never an older tab's copy of food logs.
+    state = latestStoredState();
+    state.recipeDrafts = { ...state.recipeDrafts, [recipeKey()]: {
+      templateId: ui.recipeTemplate, mode: ui.recipeMode, target: ui.recipeBasis,
+      items: ui.recipeItems.map((item) => ({ ...item }))
+    } };
+    saveState();
+  }
+
+  function generateRecipe(foodIds) {
+    const context = recipeContext();
+    if (context.error || context.blocked) { ui.recipeItems = []; ui.recipeErrors = []; return; }
+    const template = recipePlanner.templates.find((item) => item.id === ui.recipeTemplate) || recipePlanner.templates[0];
+    const result = recipePlanner.optimize(foods, context.target, foodIds || template.foodIds);
+    ui.recipeBasis = JSON.stringify(context.target);
+    ui.recipeItems = result.ok ? result.items : [];
+    ui.recipeErrors = result.errors || [];
+    ui.recipeCapped = result.cappedFoodIds || [];
+    if (result.ok) rememberRecipe();
+  }
+
+  function loadRecipeDraft(fallbackIds) {
+    const saved = state.recipeDrafts?.[recipeKey()];
+    const context = recipeContext();
+    if (saved && Array.isArray(saved.items) && recipePlanner.summarize(foods, saved.items).ok) {
+      ui.recipeTemplate = recipePlanner.templates.some((item) => item.id === saved.templateId) ? saved.templateId : ui.recipeTemplate;
+      if (!context.error && !context.blocked && saved.mode === ui.recipeMode && saved.target === JSON.stringify(context.target)) {
+        ui.recipeItems = saved.items.map((item) => ({ ...item }));
+        ui.recipeBasis = saved.target;
+      } else generateRecipe(saved.items.map((item) => item.foodId));
+    } else generateRecipe(fallbackIds);
+  }
+
+  function openRecipe(meal) {
+    state = latestStoredState();
+    ui.recipeMeal = meal;
+    ui.recipeDate = toDateKey(new Date());
+    ui.recipeMode = "remaining";
+    ui.recipeTemplate = (meal.includes("早") ? recipePlanner.templates.find((item) => item.foodIds.includes("oats")) : null)?.id || recipePlanner.templates[0].id;
+    ui.recipeErrors = [];
+    ui.recipeCapped = [];
+    loadRecipeDraft();
+    ui.modal = "recipe";
+    render();
+  }
+
+  function weighingLabel(food) {
+    if (food.state === "生重") return "生重 · 烹调前的可食部分";
+    if (food.state === "熟重") return "熟重 · 烹调后的可食部分";
+    if (food.state === "干重" || food.name.includes("（干）")) return "干重 · 加水／浸泡前称";
+    if (food.state === "沥干") return "沥干后重量 · 可食部分";
+    if (food.state === "液体") return "液体重量 · g，不是 ml";
+    if (food.name.includes("（生") || /\braw\b/i.test(food.sourceDescription || "")) return "生的可食部 · 去除不可食部分后称";
+    if (/水煮|熟|炒/.test(food.name) || /\bcooked\b|\bboiled\b|\broasted\b/i.test(food.sourceDescription || "")) return "熟的可食部 · 去除不可食部分后称";
+    return "可食部重量 · 去除不可食部分后称";
+  }
+
+  function recipeComparison() {
+    const context = recipeContext();
+    if (context.error) return `<p class="plan-errors">${escapeHtml(context.error)}</p>`;
+    const summary = recipePlanner.summarize(foods, ui.recipeItems);
+    if (!summary.ok) return `<p class="plan-errors" role="status">${summary.errors.map(escapeHtml).join("；")}</p>`;
+    const fields = [["kcal", "热量", "kcal", 0], ["protein", "蛋白质", "g", 1], ["carbs", "碳水", "g", 1], ["fat", "脂肪", "g", 1]];
+    const offTarget = fields.some(([key]) => Math.abs(summary.totals[key] - context.target[key]) > Math.max(key === "kcal" ? 30 : 3, context.target[key] * 0.1));
+    const dailyRemaining = Math.max(0, targetCalories() - sumEntries(todayLogs()).kcal);
+    return `<div class="meal-budget recipe-comparison"><p>${offTarget ? "这组食物未完全贴近目标，请查看差额后调整" : "这组食物与目标较接近，仍为估算值"}</p><table aria-label="推荐组合与目标差额"><thead><tr><th scope="col">营养</th><th scope="col">目标</th><th scope="col">本组合</th><th scope="col">差额</th></tr></thead><tbody>${fields.map(([key, label, unit, digits]) => {
+      const delta = round(summary.totals[key] - context.target[key], digits);
+      return `<tr><th scope="row">${label}<small>${unit}</small></th><td>${formatNumber(context.target[key], digits)}</td><td>${formatNumber(summary.totals[key], digits)}</td><td>${delta > 0 ? "多 " : delta < 0 ? "少 " : ""}${formatNumber(Math.abs(delta), digits)}</td></tr>`;
+    }).join("")}</tbody></table></div>
+      ${summary.totals.kcal > dailyRemaining ? `<p class="recipe-warning">如果将本组合全部新增记录，会超出今日剩余热量约 ${formatNumber(summary.totals.kcal - dailyRemaining)} kcal。请结合其他餐调整。</p>` : ""}
+      ${ui.recipeCapped.length ? '<p class="microcopy">部分食物已达到自动推荐的份量上限。不会为了追平目标无限加量，可换食物或手动调整。</p>' : ""}`;
+  }
+
+  function recipeModal() {
+    const context = recipeContext();
+    const blocked = context.error || context.blocked;
+    return `<div class="scrim" data-action="close-modal"></div><section class="sheet recipe-sheet" role="dialog" aria-modal="true" aria-label="每餐食物推荐">
+      <div class="sheet-handle"></div><div class="sheet-head"><div><h2>${escapeHtml(ui.recipeMeal)} · 吃什么</h2><p>按食物库估算份量，确认后才计入记录</p></div><button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button></div>
+      <div class="recipe-mode" aria-label="推荐依据"><button data-action="recipe-mode" data-mode="remaining" aria-pressed="${ui.recipeMode === "remaining"}">按本餐剩余</button><button data-action="recipe-mode" data-mode="full" aria-pressed="${ui.recipeMode === "full"}">查看整餐方案</button></div>
+      <p class="microcopy">${context.error ? escapeHtml(context.error) : ui.recipeMode === "remaining" ? `已扣除本餐记录的 ${formatNumber(context.consumed.kcal)} kcal；其余餐和计划外记录请同时看全天汇总。` : "这是整餐目标方案，未扣除已经吃过的食物，不能当作额外需要吃的量。"}</p>
+      ${blocked ? `<p class="recipe-warning">${escapeHtml(blocked)}</p>` : `<div class="field"><label for="recipe-template">基础组合 · 当前食物以下方清单为准</label><select id="recipe-template" data-recipe-template>${recipePlanner.templates.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === ui.recipeTemplate ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></div>
+      <div class="recipe-food-list">${ui.recipeItems.map((item, index) => {
+        const food = foodById.get(item.foodId);
+        return `<article class="recipe-food" data-recipe-food="${escapeHtml(item.foodId)}"><div class="recipe-food-head"><div><h3>${escapeHtml(food.name)}</h3><span class="weighing-label">${escapeHtml(weighingLabel(food))}</span></div><button class="pill-button" data-action="replace-recipe-food" data-index="${index}" aria-label="替换${escapeHtml(food.name)}">替换</button></div><div class="recipe-grams-row"><label for="recipe-grams-${index}">建议份量，可修改</label><div><input id="recipe-grams-${index}" type="number" inputmode="numeric" min="0" max="2000" step="1" value="${item.grams ?? ""}" data-recipe-grams="${index}" aria-label="${escapeHtml(food.name)}克数" /><span>g</span></div></div><p class="microcopy">每 100g：${food.kcal} kcal · 蛋白质 ${food.protein}g · 碳水 ${food.carbs}g · 脂肪 ${food.fat}g</p></article>`;
+      }).join("")}</div>
+      ${ui.recipeErrors.length ? `<p class="plan-errors">${ui.recipeErrors.map(escapeHtml).join("；")}</p>` : ""}
+      <div id="recipe-comparison" aria-live="polite">${recipeComparison()}</div>
+      <div class="settings-actions"><button class="button secondary full" data-action="rebalance-recipe">按当前食物重算克数</button><button class="button primary full" data-action="add-recipe">确认份量，一键加入本餐</button></div>`}
+      <p class="microcopy">两种模式的方案分别保存在当前浏览器，不会自动记为已吃。替换或重算可能调整整组份量；手动改克数只改变当前食物。0g 表示不加入。</p>
+      <div class="recipe-notes"><p>生重表示烹调前称量，不是建议生吃；熟重表示烹调后称。米饭与生米使用独立条目，不做固定倍数换算。液体按克称，不把克直接当毫升。</p><p>仅计算列出的食物与油，额外烹调油、酱料需另记。不同品牌、烹调失水和数据库取整都会造成差异，无法保证四项恰好达标，也不代表微量营养完整。</p><p>含乳、蛋、豆、坚果、鱼虾等食物时，请先检查过敏与饮食限制；本工具不自动排查禁忌。数据来源为现有 USDA FDC 食物库，称量口径可参考 <a href="https://fdc.nal.usda.gov/Foundation_Foods_Documentation/" target="_blank" rel="noopener noreferrer">USDA 可食部与克重说明</a>。</p></div>
+    </section>`;
+  }
+
+  function replacementRows() {
+    const term = ui.replacementSearch.trim().toLowerCase();
+    const matches = foods.filter((food) => [food.name, food.state, ...(food.aliases || [])].join(" ").toLowerCase().includes(term));
+    return matches.length ? matches.map((food) => `<button class="recipe-replacement-row" data-replacement-id="${escapeHtml(food.id)}" ${food.id === "brazil_nuts" ? "disabled" : ""}><span><strong>${escapeHtml(food.name)}</strong><small>${escapeHtml(weighingLabel(food))}${food.id === "brazil_nuts" ? " · 不自动配量，可在食物库手动记录" : ""}</small></span><span>${food.kcal}<small>kcal / 100g</small></span></button>`).join("") : '<p class="empty-meal">没有找到，可换个名称或搜索生／熟。</p>';
+  }
+
+  function replacementModal() {
+    const current = foodById.get(ui.recipeItems[ui.replacementIndex]?.foodId);
+    return `<div class="scrim" data-action="back-to-recipe"></div><section class="sheet" role="dialog" aria-modal="true" aria-label="替换推荐食物"><div class="sheet-handle"></div><div class="sheet-head"><div><h2>换成想吃的食物</h2><p>正在替换：${escapeHtml(current?.name || "食物")}</p></div><button class="close-button" data-action="back-to-recipe" aria-label="返回方案">${icon("x")}</button></div><p class="microcopy">选择后会重新估算整组克数，不是同克数互换。注意区分生重、熟重；如无法满足营养目标，会保留实际差额。</p><div class="field"><label for="replacement-search">搜索食物</label><input id="replacement-search" type="search" placeholder="例如：米饭、生米、牛肉、豆腐" value="${escapeHtml(ui.replacementSearch)}" /></div><div id="replacement-results" class="recipe-replacement-list">${replacementRows()}</div></section>`;
+  }
+
+  function replaceRecipeFood(foodId) {
+    const ids = ui.recipeItems.map((item) => item.foodId);
+    if (ids.some((id, index) => id === foodId && index !== ui.replacementIndex)) {
+      showToast("这组方案已包含该食物，请选其他食物或直接修改原条目的克数");
+      return;
+    }
+    ids[ui.replacementIndex] = foodId;
+    generateRecipe(ids);
+    ui.modal = "recipe";
+    render();
+  }
+
+  function addRecipe() {
+    state = latestStoredState();
+    const context = recipeContext();
+    const summary = recipePlanner.summarize(foods, ui.recipeItems);
+    if (context.error || context.blocked || !summary.ok) {
+      showToast(context.error || context.blocked || summary.errors.join("；"));
+      return;
+    }
+    if (ui.recipeBasis !== JSON.stringify(context.target)) {
+      generateRecipe(ui.recipeItems.map((item) => item.foodId));
+      showToast("本餐记录或目标已变化，份量已重新估算，请再次确认后加入");
+      return;
+    }
+    const items = ui.recipeItems.filter((item) => item.grams > 0);
+    if (!items.length) { showToast("所有份量都是 0g，没有可加入的食物"); return; }
+    if (ui.recipeMode === "full" && context.recorded.length && !window.confirm("本餐已有饮食记录。继续会额外新增整份方案，不会替换原记录，可能重复计入。确认仍要加入吗？")) return;
+    state.logs.push(...items.map((item) => makeLog(item.foodId, item.grams, ui.recipeMeal, "recommendation")));
+    state.recentFoodIds = [...new Set([...items.map((item) => item.foodId), ...state.recentFoodIds])].slice(0, 12);
+    saveState();
+    ui.modal = null;
+    ui.screen = "today";
+    showToast(`已加入${ui.recipeMeal} ${items.length} 项食物，共 ${formatNumber(summary.totals.kcal)} kcal；可逐项修改`);
+  }
+
   function renderModal() {
     if (ui.modal === "food") return foodModal();
     if (ui.modal === "log") return logModal();
     if (ui.modal === "formula") return formulaModal();
     if (ui.modal === "profile") return profileModal();
     if (ui.modal === "meals") return mealsModal();
+    if (ui.modal === "recipe") return recipeModal();
+    if (ui.modal === "replacement") return replacementModal();
     return "";
   }
 
@@ -1106,6 +1287,31 @@
     const mealDefault = document.querySelector("[data-meal-default]");
     if (mealDefault) mealDefault.addEventListener("change", () => { ui.mealAsDefault = mealDefault.checked; });
 
+    const recipeTemplate = document.querySelector("[data-recipe-template]");
+    if (recipeTemplate) recipeTemplate.addEventListener("change", () => {
+      ui.recipeTemplate = recipeTemplate.value;
+      generateRecipe();
+      render();
+    });
+    document.querySelectorAll("[data-recipe-grams]").forEach((input) => {
+      input.addEventListener("input", () => {
+        ui.recipeItems[Number(input.dataset.recipeGrams)].grams = input.value.trim() === "" ? null : Number(input.value);
+        ui.recipeCapped = [];
+        document.getElementById("recipe-comparison").innerHTML = recipeComparison();
+        rememberRecipe();
+      });
+    });
+    const replacementSearch = document.getElementById("replacement-search");
+    if (replacementSearch) replacementSearch.addEventListener("input", () => {
+      ui.replacementSearch = replacementSearch.value;
+      document.getElementById("replacement-results").innerHTML = replacementRows();
+    });
+    const replacementResults = document.getElementById("replacement-results");
+    if (replacementResults) replacementResults.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-replacement-id]");
+      if (button) replaceRecipeFood(button.dataset.replacementId);
+    });
+
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async (event) => {
         const action = button.dataset.action;
@@ -1131,6 +1337,27 @@
         } else if (action === "record-meal") {
           ui.preferredMeal = button.dataset.meal;
           navigate("food");
+        } else if (action === "open-recipe") {
+          openRecipe(button.dataset.meal);
+        } else if (action === "recipe-mode") {
+          ui.recipeMode = button.dataset.mode;
+          ui.recipeErrors = [];
+          ui.recipeCapped = [];
+          loadRecipeDraft(ui.recipeItems.length ? ui.recipeItems.map((item) => item.foodId) : undefined);
+          render();
+        } else if (action === "replace-recipe-food") {
+          ui.replacementIndex = Number(button.dataset.index);
+          ui.replacementSearch = "";
+          ui.modal = "replacement";
+          render();
+        } else if (action === "back-to-recipe") {
+          ui.modal = "recipe";
+          render();
+        } else if (action === "rebalance-recipe") {
+          generateRecipe(ui.recipeItems.map((item) => item.foodId));
+          render();
+        } else if (action === "add-recipe") {
+          addRecipe();
         } else if (action === "close-modal") {
           ui.modal = null;
           ui.profileDraft = null;
@@ -1194,13 +1421,19 @@
     if (document.visibilityState === "visible" && !ui.modal) render();
   });
 
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY || !event.newValue) return;
+    state = latestStoredState();
+    render();
+  });
+
   setInterval(() => {
     if (!ui.modal && ui.renderedDate !== toDateKey(new Date())) render();
   }, 30000);
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=9", { updateViaCache: "none" }).catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=10", { updateViaCache: "none" }).catch((error) => {
         console.warn("离线缓存注册失败。", error);
       });
     });
