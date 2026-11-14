@@ -1362,6 +1362,19 @@ select:focus-visible {
 .brand-coverage p { margin: 0 0 10px; }
 .brand-source { overflow-wrap: anywhere; }
 .brand-source a { display: block; font-size: 12px; line-height: 1.8; color: inherit; margin: 10px 0; }
+.daily-open-button { margin: 8px 0; }
+.daily-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin: 20px 0; }
+.daily-meal { border-top: 2px solid #ddd; padding: 24px 0; }
+.daily-meal h3 { margin: 0; font-size: 20px; }
+.daily-food { padding: 16px 0; border-bottom: 1px solid #e8e8e5; }
+.daily-food h4 { margin: 0 0 8px; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.daily-food .recipe-food-head > div { min-width: 0; }
+.daily-meal-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.daily-lock { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; font-size: 12px; line-height: 1.8; color: #666; }
+.daily-lock input { width: 18px; height: 18px; margin: 2px 0; flex: 0 0 18px; accent-color: #171717; }
+.daily-source-note { display: block; color: #666; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.daily-sheet a { color: inherit; text-decoration: underline; }
+.daily-sheet button:disabled, .daily-sheet input:disabled { opacity: .5; cursor: not-allowed; }
 .food-row h3, .food-row p, .sheet-head h2 { overflow-wrap: anywhere; }
 .nutrition-preview strong { overflow-wrap: anywhere; }
 @media (max-width: 430px) {

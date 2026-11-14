@@ -11,6 +11,7 @@
   const planner = window.NutritionPlanner;
   const mealPlanner = window.MealPlanner;
   const recipePlanner = window.RecipePlanner;
+  const dailyPlanner = window.DailyPlanner;
   const foodById = new Map(foods.map((food) => [food.id, food]));
   const appRoot = document.getElementById("app");
 
@@ -126,6 +127,7 @@
       plan: null,
       mealSchedule: { defaultMeals: mealPlanner.preset(3), byDate: {} },
       recipeDrafts: {},
+      dailyRecipeDrafts: {},
       logs: breakfast,
       weights: seedWeights(),
       historicalCompletion: { carbs: 83, protein: 91, fat: 80 },
@@ -161,6 +163,7 @@
         saved.plan = saved.plan || null;
         saved.mealSchedule = saved.mealSchedule || { defaultMeals: mealPlanner.preset(3), byDate: {} };
         saved.recipeDrafts = saved.recipeDrafts || {};
+        saved.dailyRecipeDrafts = saved.dailyRecipeDrafts || {};
         // Keep additive storage changes readable by an older cached app shell.
         saved.version = 2;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
@@ -251,6 +254,12 @@
     recipeBasis: "",
     replacementIndex: null,
     replacementSearch: "",
+    dayPlan: null,
+    dayStyle: "mixed",
+    dayReplaceMeal: null,
+    dayReplaceItem: null,
+    daySearch: "",
+    dayFilter: "all",
     deferredInstallPrompt: null,
     online: navigator.onLine
   };
@@ -408,6 +417,8 @@
             <button class="pill-button" data-action="open-meals">调整餐次</button>
           </div>
           <p class="microcopy">${state.plan ? `每日 ${formatNumber(targetCalories())} kcal 按比例分配；改变餐数不改变每日总量。` : "先在个人资料生成每日目标，再查看每餐分配。"}${extraNames.length ? " 当前有计划外记录，每日剩余量请以上方汇总为准。" : ""}</p>
+          <button class="button primary full daily-open-button" data-action="open-daily">定制全天食谱</button>
+          <p class="microcopy">品牌食品＋鸡蛋、米饭等常见食物，列出每餐份量；计划不会自动算作已吃。</p>
           <div class="meal-groups">${mealHtml}</div>
         </section>
       </main>
@@ -1033,7 +1044,182 @@
     showToast(`已加入${ui.recipeMeal} ${items.length} 项食物，共 ${formatNumber(summary.totals.kcal)} kcal；可逐项修改`);
   }
 
+  function dailyContext() {
+    const date = toDateKey(new Date());
+    const targets = { ...state.targets, kcal: targetCalories() };
+    const allocated = mealPlanner.allocate(targets, mealPlanFor(date));
+    const basis = JSON.stringify({ date, targets, meals: mealPlanFor(date) });
+    return { date, targets, allocated, basis, stale: !state.plan || (ui.dayPlan && (ui.dayPlan.date !== date || ui.dayPlan.basis !== basis)) };
+  }
+
+  function dailyLogged(meal) {
+    return state.logs.some((log) => log.date === ui.dayPlan.date && log.dailyPlanId === ui.dayPlan.id && log.dailyPlanMeal === meal.name);
+  }
+
+  function validDailyDraft(draft) {
+    return draft && typeof draft.id === "string" && Array.isArray(draft.meals) && draft.meals.length > 0 && draft.meals.every((meal) => meal?.name && ["kcal", "protein", "carbs", "fat"].every((key) => Number.isFinite(meal.target?.[key]) && meal.target[key] >= 0) && dailyPlanner.summarize(foods, meal.items).ok);
+  }
+
+  function rememberDaily() {
+    if (!validDailyDraft(ui.dayPlan) || dailyContext().stale) return;
+    state = latestStoredState();
+    // Save only this date's draft; never overwrite another tab's food logs.
+    if (dailyContext().stale) return;
+    state.dailyRecipeDrafts = { ...state.dailyRecipeDrafts, [ui.dayPlan.date]: JSON.parse(JSON.stringify(ui.dayPlan)) };
+    saveState();
+  }
+
+  function generateDaily(variant = 0) {
+    state = latestStoredState();
+    const context = dailyContext();
+    if (!state.plan || !context.allocated.ok) { showToast("请先完善个人资料并生成每日目标"); return; }
+    const result = dailyPlanner.generate(foods, context.allocated.meals, { style: ui.dayStyle, variant });
+    if (!result.ok) { showToast(result.errors.join("；")); return; }
+    ui.dayPlan = { id: makeId("daily"), date: context.date, basis: context.basis, style: ui.dayStyle, variant, meals: result.meals };
+    rememberDaily();
+  }
+
+  function openDaily() {
+    state = latestStoredState();
+    if (!state.plan) {
+      ui.profileDraft = { ...state.profile };
+      ui.modal = "profile";
+      showToast("先完善个人资料，生成你的每日热量和营养目标");
+      return;
+    }
+    const saved = state.dailyRecipeDrafts?.[toDateKey(new Date())];
+    ui.dayPlan = validDailyDraft(saved) ? JSON.parse(JSON.stringify(saved)) : null;
+    ui.dayStyle = ui.dayPlan?.style || "mixed";
+    if (!ui.dayPlan) generateDaily();
+    ui.modal = "daily";
+    render();
+  }
+
+  function dailyComparison(target, summary, label) {
+    if (!summary.ok) return `<p class="plan-errors" role="status">${summary.errors.map(escapeHtml).join("；")}</p>`;
+    const fields = [["kcal", "热量", "kcal", 0], ["protein", "蛋白质", "g", 1], ["carbs", "碳水", "g", 1], ["fat", "脂肪", "g", 1]];
+    return `<div class="meal-budget"><p>${escapeHtml(label)}</p><table aria-label="${escapeHtml(label)}"><thead><tr><th scope="col">营养</th><th scope="col">目标</th><th scope="col">计划</th><th scope="col">差额</th></tr></thead><tbody>${fields.map(([key, name, unit, digits]) => {
+      const unknown = summary.missing[key] > 0;
+      const delta = round(summary.totals[key] - target[key], digits);
+      return `<tr><th scope="row">${name}<small>${unit}</small></th><td>${formatNumber(target[key], digits)}</td><td>${unknown ? "已知 " : ""}${formatNumber(summary.totals[key], digits)}${unknown ? "＋" : ""}</td><td>${unknown ? "待核" : `${delta > 0 ? "多 " : delta < 0 ? "少 " : ""}${formatNumber(Math.abs(delta), digits)}`}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  }
+
+  function dailyMealFeedback(meal) {
+    const summary = dailyPlanner.summarize(foods, meal.items);
+    return dailyComparison(meal.target, summary, `${meal.name} · 整餐计划与目标`) + (meal.warnings || []).map((warning) => `<p class="microcopy">${escapeHtml(warning)}</p>`).join("") + (summary.ok && Object.values(summary.missing).some((count) => count) ? '<p class="recipe-warning">有食物未公布营养素，不能判断该餐是否达标，也不会把未知项当零补配。</p>' : "");
+  }
+
+  function dailySummary() {
+    if (!ui.dayPlan) return "";
+    const summaries = ui.dayPlan.meals.map((meal) => dailyPlanner.summarize(foods, meal.items));
+    if (summaries.some((item) => !item.ok)) return '<p class="plan-errors">请先修正各餐的份量，再保存或计入记录。</p>';
+    const totals = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+    const missing = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+    const target = { ...totals };
+    ui.dayPlan.meals.forEach((meal, index) => {
+      Object.keys(totals).forEach((key) => { totals[key] += summaries[index].totals[key]; missing[key] += summaries[index].missing[key]; target[key] += meal.target[key]; });
+    });
+    const produce = summaries.reduce((sum, summary) => sum + summary.produceGrams, 0);
+    const unknown = Object.values(missing).some((count) => count > 0);
+    const offTarget = Object.keys(target).some((key) => Math.abs(totals[key] - target[key]) > Math.max(key === "kcal" ? 50 : 5, target[key] * 0.1));
+    return `${dailyComparison(target, { ok: true, totals, missing }, "全天计划合计（不含已吃记录）")}
+      <p class="${unknown || offTarget ? "recipe-warning" : "microcopy"}">${unknown ? "营养资料不完整，不能确认全天达标。" : offTarget ? "计划与目标仍有差额，请按表调整食物或份量；不为追数字无限增加食物。" : "四项估算与目标较接近，不代表纤维、维生素、矿物质或钠都充足／合适。"}</p>
+      <p class="microcopy">已列出的基础蔬果约 ${formatNumber(produce)}g（不计品牌中未知克重的蔬菜）。${produce < 400 ? "本计划已计蔬果不足 400g，可增加或替换蔬果后查看新总量。" : "仍需注意食物多样性。"} <a href="https://www.who.int/news-room/fact-sheets/detail/healthy-diet" target="_blank" rel="noopener noreferrer">WHO 膳食参考</a></p>`;
+  }
+
+  function dailyModal() {
+    if (!ui.dayPlan) return "";
+    const context = dailyContext();
+    return `<div class="scrim" data-action="close-modal"></div><section class="sheet daily-sheet" role="dialog" aria-modal="true" aria-label="定制全天食谱"><div class="sheet-handle"></div>
+      <div class="sheet-head"><div><h2>一天吃什么</h2><p>${escapeHtml(ui.dayPlan.date)} · ${ui.dayPlan.meals.length} 餐 · ${ui.dayPlan.meals.some(dailyLogged) ? `本方案已记录 ${ui.dayPlan.meals.filter(dailyLogged).length} 餐` : "尚未计为已吃"}</p></div><button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button></div>
+      <p class="microcopy">按你已保存的每日目标和餐次分配。这里是整日计划，不扣除已吃记录；已吃过的餐不要再次计入。草稿只保存在当前浏览器。</p>
+      <div class="daily-controls"><div class="field"><label for="daily-style">搭配方式</label><select id="daily-style"><option value="mixed" ${ui.dayStyle === "mixed" ? "selected" : ""}>品牌＋常见食物</option><option value="common" ${ui.dayStyle === "common" ? "selected" : ""}>常见食物为主</option></select></div><button class="button secondary" data-action="regenerate-daily">重新生成／换一天搭配</button></div>
+      <p class="microcopy">当前方案：${ui.dayPlan.style === "mixed" ? "品牌＋常见食物" : "常见食物为主"}。混合方案默认最多安排一餐大陆品牌主食；品牌自动搭配只使用营养完整条目，目前主要是麦当劳。赛百味、瑞幸可手动替换，未公布营养会单独提示。</p>
+      ${context.stale ? '<p class="recipe-warning" role="status">日期、每日目标或餐次已变化。以下是旧草稿，请重新生成后再计入；已有饮食记录不受影响。</p>' : ""}
+      <div id="daily-summary" aria-live="polite">${dailySummary()}</div>
+      <div class="daily-meals">${ui.dayPlan.meals.map((meal, mi) => {
+        const logged = dailyLogged(meal);
+        const disabled = context.stale || logged;
+        return `<article class="daily-meal" data-daily-meal="${mi}"><div class="section-head"><h3>${escapeHtml(meal.name)}</h3><span>${logged ? "已计入记录" : `${formatNumber(meal.target.kcal)} kcal 目标`}</span></div>
+          ${logged ? '<p class="microcopy">这餐已记录。实际吃的份量要改，请回首页点该条记录修改；不会重复提交本方案。</p>' : ""}
+          ${meal.items.map((item, ii) => {
+            const food = foodById.get(item.foodId);
+            const serving = foodNutrition.isServing(food);
+            return `<div class="daily-food" data-daily-food="${escapeHtml(item.foodId)}"><div class="recipe-food-head"><div><h4>${escapeHtml(food.name)}</h4><span class="weighing-label">${escapeHtml(serving ? `${food.region} · 1份 = ${food.servingLabel}` : weighingLabel(food))}</span></div><button class="pill-button" data-action="replace-daily" data-mi="${mi}" data-ii="${ii}" ${disabled ? "disabled" : ""}>替换</button></div>
+              <div class="recipe-grams-row"><label for="day-qty-${mi}-${ii}">${serving ? "标准份数" : "实际克数"}</label><div><input id="day-qty-${mi}-${ii}" type="number" min="0" max="${serving ? 20 : 2000}" step="${serving ? 0.01 : 1}" value="${item.amount ?? ""}" data-day-amount data-mi="${mi}" data-ii="${ii}" ${disabled ? "disabled" : ""} /><span>${serving ? "份" : "g"}</span></div></div>
+              ${serving ? `<p class="microcopy">按官方默认配方，0.5 份表示等比例半份，不能模拟去面包、改糖奶。${food.sourceUrl ? `<a href="${escapeHtml(food.sourceUrl)}" target="_blank" rel="noopener noreferrer">官方配置与来源</a>` : ""}</p>` : `<label class="daily-lock"><input type="checkbox" data-day-lock data-mi="${mi}" data-ii="${ii}" ${item.locked ? "checked" : ""} ${disabled ? "disabled" : ""} />固定份量，重算时保留${food.id === "egg" ? "（水煮蛋去壳后称重，不按固定个重）" : ""}</label>`}
+              ${serving ? `<small class="daily-source-note">${escapeHtml(food.standardRecipe)} ${escapeHtml(food.notes)}</small>` : ""}</div>`;
+          }).join("")}
+          <div id="daily-feedback-${mi}" aria-live="polite">${dailyMealFeedback(meal)}</div>
+          <div class="daily-meal-actions"><button class="button secondary full" data-action="rebalance-daily" data-mi="${mi}" ${disabled ? "disabled" : ""}>按目标重算本餐</button><button class="button primary full" data-action="record-daily-meal" data-mi="${mi}" ${disabled || !meal.items.some((item) => item.amount > 0) ? "disabled" : ""}>${logged ? "本方案这餐已记录" : "吃完后，计入本餐"}</button></div></article>`;
+      }).join("")}</div>
+      <button class="button secondary full" data-action="record-daily-all" ${context.stale || ui.dayPlan.meals.every((meal) => dailyLogged(meal) || !meal.items.some((item) => item.amount > 0)) ? "disabled" : ""}>整天都已吃，批量记录未提交餐次</button>
+      <div class="recipe-notes"><p>只按列出的食品估算热量和三大营养素。手动修改份量会自动固定该项；重算仅调整未固定的基础食物。0 表示不吃这一项。缺少营养资料时停止自动补配，但仍可手动计划和记录。</p><p>普通食物按标明的生重／熟重／去壳可食部称量；生重不是建议生吃。烹调油、酱料、奶糖和套餐配品未列出则需另记。不同配方、加工和份量会有误差。</p><p>本工具不自动检查过敏、饮食禁忌、钠、纤维和微量营养，不保证营养全面；品牌外食请留意钠与额外酱料。无法适配的目标显示实际差额，不强行凑到达标。</p></div></section>`;
+  }
+
+  function dailyReplacementRows() {
+    const term = ui.daySearch.trim().toLowerCase();
+    const meal = ui.dayPlan.meals[ui.dayReplaceMeal];
+    const selected = new Set(meal.items.filter((_, index) => index !== ui.dayReplaceItem).map((item) => item.foodId));
+    const matches = foods.filter((food) => (!food.brand || food.region === "中国大陆") && (ui.dayFilter === "all" || (ui.dayFilter === "brand") === foodNutrition.isServing(food)) && [food.name, ...(food.aliases || [])].join(" ").toLowerCase().includes(term));
+    return matches.map((food) => `<button class="recipe-replacement-row" data-day-replacement="${escapeHtml(food.id)}" ${selected.has(food.id) || food.id === "brazil_nuts" ? "disabled" : ""}><span><strong>${escapeHtml(food.name)}</strong><small>${escapeHtml(foodNutrition.isServing(food) ? `${food.region} · ${food.servingLabel}` : weighingLabel(food))}${selected.has(food.id) ? " · 本餐已包含" : ""}${food.id === "brazil_nuts" ? " · 不用于自动配餐" : ""}${["protein", "carbs", "fat"].some((key) => !Number.isFinite(food[key])) ? " · 营养资料不完整" : ""}</small></span><span>${food.kcal}<small>${foodNutrition.isServing(food) ? "kcal / 份" : "kcal / 100g"}</small></span></button>`).join("") || '<p class="empty-meal">未找到对应食物，试试另一个名称。</p>';
+  }
+
+  function dailyReplacementModal() {
+    return `<div class="scrim" data-action="back-daily"></div><section class="sheet" role="dialog" aria-modal="true" aria-label="替换全天食谱食物"><div class="sheet-handle"></div><div class="sheet-head"><div><h2>换成想吃的</h2><p>基础食物和大陆品牌可混合搭配</p></div><button class="close-button" data-action="back-daily" aria-label="返回食谱">${icon("x")}</button></div><p class="microcopy">替换会重设为新食物常用克数或 1 标准份，再调整未固定的其他食物；不是等克数、等热量替换。资料不全时仅替换，不补造营养。</p><div class="field"><label for="daily-food-search">搜索食品</label><input id="daily-food-search" type="search" placeholder="鸡蛋、米饭、赛百味、麦当劳…" value="${escapeHtml(ui.daySearch)}" /></div><div class="field"><label for="daily-food-filter">范围</label><select id="daily-food-filter">${[["all", "全部"], ["common", "基础食物"], ["brand", "大陆品牌食品"]].map(([id, label]) => `<option value="${id}" ${ui.dayFilter === id ? "selected" : ""}>${label}</option>`).join("")}</select></div><div id="daily-replacements">${dailyReplacementRows()}</div></section>`;
+  }
+
+  function rebalanceDailyMeal(index) {
+    const meal = ui.dayPlan.meals[index];
+    const result = dailyPlanner.rebalance(foods, meal.target, meal.items);
+    if (!result.ok) { showToast(result.errors.join("；")); return false; }
+    meal.items = result.items;
+    meal.warnings = result.warnings;
+    rememberDaily();
+    return true;
+  }
+
+  function replaceDailyFood(foodId) {
+    state = latestStoredState();
+    const meal = ui.dayPlan.meals[ui.dayReplaceMeal];
+    const food = foodById.get(foodId);
+    if (dailyContext().stale || dailyLogged(meal) || !food || (food.brand && food.region !== "中国大陆") || foodId === "brazil_nuts") { showToast("当前方案不可替换，请返回检查日期或记录状态"); return; }
+    if (meal.items.some((item, index) => index !== ui.dayReplaceItem && item.foodId === foodId)) { showToast("本餐已有该食物，可直接修改原项份量"); return; }
+    meal.items[ui.dayReplaceItem] = { foodId, amount: foodNutrition.isServing(food) ? 1 : food.portion, locked: foodNutrition.isServing(food) };
+    rebalanceDailyMeal(ui.dayReplaceMeal);
+    ui.modal = "daily";
+    render();
+  }
+
+  async function recordDaily(mealIndex = null) {
+    state = latestStoredState();
+    if (dailyContext().stale) { showToast("目标、日期或餐次已变化，请重新生成方案后再确认"); return; }
+    const selected = ui.dayPlan.meals.filter((meal, index) => (mealIndex === null || index === mealIndex) && !dailyLogged(meal) && meal.items.some((item) => item.amount > 0));
+    if (!selected.length) { showToast("没有待提交餐次，本方案不会重复计入"); return; }
+    const errors = selected.flatMap((meal) => dailyPlanner.summarize(foods, meal.items).errors || []);
+    if (errors.length) { showToast(errors.join("；")); return; }
+    const duplicates = selected.filter((meal) => todayLogs().some((log) => log.meal === meal.name));
+    const confirmedLogs = JSON.stringify(todayLogs());
+    if ((mealIndex === null || duplicates.length) && !window.confirm(`确认这些食物已经吃完？将追加记录：${selected.map((meal) => meal.name).join("、")}。${duplicates.length ? `其中 ${duplicates.map((meal) => meal.name).join("、")} 已有记录，继续可能重复计入。` : ""}不会替换或删除原记录。`)) return;
+    // A native confirmation can remain open while another tab writes data.
+    // Let queued storage events synchronize this renderer before rereading.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state = latestStoredState();
+    if (dailyContext().stale || JSON.stringify(todayLogs()) !== confirmedLogs || selected.some(dailyLogged)) {
+      showToast("确认期间记录或目标已变化，未新增食物。请核对最新数据后重新确认");
+      return;
+    }
+    const added = selected.flatMap((meal) => meal.items.filter((item) => item.amount > 0).map((item) => ({ ...makeLog(item.foodId, item.amount, meal.name, "recommendation"), dailyPlanId: ui.dayPlan.id, dailyPlanMeal: meal.name })));
+    state.logs.push(...added);
+    state.recentFoodIds = [...new Set([...added.map((log) => log.foodId), ...state.recentFoodIds])].slice(0, 12);
+    saveState();
+    showToast(`已记录 ${selected.map((meal) => meal.name).join("、")}，共 ${added.length} 项；可在首页逐项修改`);
+  }
+
   function renderModal() {
+    if (ui.modal === "daily") return dailyModal();
+    if (ui.modal === "daily-replacement") return dailyReplacementModal();
     if (ui.modal === "food") return foodModal();
     if (ui.modal === "brand-info") return brandInfoModal();
     if (ui.modal === "log") return logModal();
@@ -1368,10 +1554,73 @@
       if (button) replaceRecipeFood(button.dataset.replacementId);
     });
 
+    const dayStyle = document.getElementById("daily-style");
+    if (dayStyle) dayStyle.addEventListener("change", () => { ui.dayStyle = dayStyle.value; });
+    document.querySelectorAll("[data-day-amount]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const mi = Number(input.dataset.mi), ii = Number(input.dataset.ii);
+        const meal = ui.dayPlan.meals[mi];
+        if (dailyContext().stale || dailyLogged(meal)) return;
+        meal.items[ii].amount = input.value.trim() === "" ? null : Number(input.value);
+        meal.items[ii].locked = true;
+        meal.warnings = [];
+        const lock = document.querySelector(`[data-day-lock][data-mi="${mi}"][data-ii="${ii}"]`);
+        if (lock) lock.checked = true;
+        document.getElementById(`daily-feedback-${mi}`).innerHTML = dailyMealFeedback(meal);
+        document.getElementById("daily-summary").innerHTML = dailySummary();
+        const record = document.querySelector(`[data-action="record-daily-meal"][data-mi="${mi}"]`);
+        if (record) record.disabled = !meal.items.some((item) => item.amount > 0);
+        rememberDaily();
+      });
+    });
+    document.querySelectorAll("[data-day-lock]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const meal = ui.dayPlan.meals[Number(input.dataset.mi)];
+        if (dailyContext().stale || dailyLogged(meal)) return;
+        meal.items[Number(input.dataset.ii)].locked = input.checked;
+        rememberDaily();
+      });
+    });
+    const daySearch = document.getElementById("daily-food-search");
+    if (daySearch) daySearch.addEventListener("input", () => { ui.daySearch = daySearch.value; document.getElementById("daily-replacements").innerHTML = dailyReplacementRows(); });
+    const dayFilter = document.getElementById("daily-food-filter");
+    if (dayFilter) dayFilter.addEventListener("change", () => { ui.dayFilter = dayFilter.value; document.getElementById("daily-replacements").innerHTML = dailyReplacementRows(); });
+    const dayResults = document.getElementById("daily-replacements");
+    if (dayResults) dayResults.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-day-replacement]");
+      if (button && !button.disabled) replaceDailyFood(button.dataset.dayReplacement);
+    });
+
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async (event) => {
         const action = button.dataset.action;
-        if (action === "brand-info") {
+        if (action === "open-daily") {
+          openDaily();
+        } else if (action === "regenerate-daily") {
+          if (!window.confirm("重新生成会替换当前食谱草稿；已经吃过并记录的食物保持不变。继续吗？")) return;
+          generateDaily((ui.dayPlan?.variant || 0) + 1);
+          render();
+        } else if (action === "replace-daily") {
+          if (dailyContext().stale) { showToast("目标或餐次已变化，请重新生成"); return; }
+          ui.dayReplaceMeal = Number(button.dataset.mi);
+          ui.dayReplaceItem = Number(button.dataset.ii);
+          if (dailyLogged(ui.dayPlan.meals[ui.dayReplaceMeal])) return;
+          ui.daySearch = "";
+          ui.dayFilter = "all";
+          ui.modal = "daily-replacement";
+          render();
+        } else if (action === "back-daily") {
+          ui.modal = "daily";
+          render();
+        } else if (action === "rebalance-daily") {
+          if (dailyContext().stale || dailyLogged(ui.dayPlan.meals[Number(button.dataset.mi)])) return;
+          rebalanceDailyMeal(Number(button.dataset.mi));
+          render();
+        } else if (action === "record-daily-meal") {
+          await recordDaily(Number(button.dataset.mi));
+        } else if (action === "record-daily-all") {
+          await recordDaily();
+        } else if (action === "brand-info") {
           ui.modal = "brand-info";
           render();
         } else if (action === "open-profile") {
@@ -1491,7 +1740,7 @@
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=11", { updateViaCache: "none" }).catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=12", { updateViaCache: "none" }).catch((error) => {
         console.warn("离线缓存注册失败。", error);
       });
     });
