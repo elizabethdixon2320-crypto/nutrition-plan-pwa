@@ -1,0 +1,11 @@
+{
+  "verifiedAt": "2026-11-15",
+  "linkedProducts": 60,
+  "rows": 74,
+  "excluded": [
+    {
+      "path": "/product/酥酥多笋卷",
+      "reason": "Missing or ambiguous per-serving table"
+    }
+  ]
+}

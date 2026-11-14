@@ -28,7 +28,7 @@
     const index = new Map(foods.map((food) => [food?.id, food]));
     if (new Set(ids).size !== ids.length) return null;
     const selection = Array.from(ids, (id) => typeof id === "string" && id ? index.get(id) : null);
-    return selection.every(hasNutrients) ? selection : null;
+    return selection.every((food) => hasNutrients(food) && food.basis !== "serving") ? selection : null;
   }
 
   function nutrientUnits(food, grams) {
@@ -45,7 +45,7 @@
   function summarize(foods, items) {
     if (!Array.isArray(items) || !items.length) return fail("至少需要选择一种食物。");
     const selected = selectFoods(foods, items.map((item) => item?.foodId));
-    if (!selected) return fail("请选择食物库中存在且不重复的食物。");
+    if (!selected) return fail("请选择食物库中营养完整且不重复的按克食物；按份商品请单独记录。");
     if (!items.every((item) => Number.isInteger(item.grams) && item.grams >= 0 && item.grams <= 2000)) {
       return fail("食物重量须为 0–2000 g 的整数。");
     }
@@ -88,7 +88,7 @@
   function optimize(foods, target, foodIds) {
     if (!hasNutrients(target) || target.kcal <= 0) return fail("本餐目标须使用非负数字，热量须大于 0 kcal。");
     const selected = selectFoods(foods, foodIds);
-    if (!selected) return fail("请选择食物库中存在且不重复的食物。");
+    if (!selected) return fail("请选择食物库中营养完整且不重复的按克食物；按份商品请单独记录。");
     // Macro-only fitting cannot account for high selenium exposure from Brazil nuts.
     // https://ods.od.nih.gov/factsheets/Selenium-HealthProfessional/
     if (foodIds.includes("brazil_nuts")) return fail("巴西坚果不参与自动配量，请选择其他食物；已食用的实际重量仍可手动记录。");

@@ -2,7 +2,12 @@
   "use strict";
 
   const STORAGE_KEY = "personal-nutrition-plan-v1";
-  const { foods, categories, library } = window.NUTRITION_DATA;
+  const baseData = window.NUTRITION_DATA;
+  const brandFoods = window.BRAND_FOODS || [];
+  const foods = [...baseData.foods, ...brandFoods];
+  const categories = [...baseData.categories, "品牌食品"];
+  const library = { ...baseData.library, itemCount: foods.length };
+  const foodNutrition = window.FoodNutrition;
   const planner = window.NutritionPlanner;
   const mealPlanner = window.MealPlanner;
   const recipePlanner = window.RecipePlanner;
@@ -53,14 +58,13 @@
   }
 
   function nutrientsFor(food, grams) {
-    const ratio = Math.max(0, Number(grams) || 0) / 100;
-    return {
-      kcal: round(food.kcal * ratio, 0),
-      carbs: round(food.carbs * ratio),
-      protein: round(food.protein * ratio),
-      fat: round(food.fat * ratio)
-    };
+    return foodNutrition.calculate(food, grams);
   }
+
+  function nutrientText(value, unit = "") { return Number.isFinite(value) ? `${formatNumber(value, 1)}${unit}` : "未公布"; }
+  function amountText(food, amount) { return foodNutrition.amountLabel(food, amount); }
+  function logAmount(entry) { return amountText(foodForLog(entry), entry.grams); }
+  function foodBasis(food) { return foodNutrition.isServing(food) ? `份（${food.servingLabel || "原标准份"}）` : "100g"; }
 
   function makeLog(foodId, grams, meal, source = "manual") {
     const food = foodById.get(foodId);
@@ -71,8 +75,11 @@
       source,
       foodId,
       name: food.name,
+      // Legacy field name: quantityUnit distinguishes grams from standard servings.
       grams: Number(grams),
       measure: food.state,
+      quantityUnit: foodNutrition.isServing(food) ? "serving" : "g",
+      ...(foodNutrition.isServing(food) ? { foodSnapshot: { ...food } } : {}),
       ...nutrientsFor(food, grams)
     };
   }
@@ -127,11 +134,20 @@
     };
   }
 
+  function restoreServingLog(entry) {
+    if (entry.foodSnapshot?.basis !== "serving") return entry;
+    // Older open tabs may have edited an unfamiliar food as grams or coerced null to 0.
+    // Recompute from the original snapshot, never today's product formulation.
+    return { ...entry, name: entry.foodSnapshot.name, measure: entry.foodSnapshot.state,
+      quantityUnit: "serving", ...nutrientsFor(entry.foodSnapshot, entry.grams) };
+  }
+
   function loadState() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && [1, 2, 3].includes(saved.version)) {
         saved.logs = (saved.logs || []).map((entry) => {
+          if (entry.foodSnapshot?.basis === "serving") return restoreServingLog(entry);
           const food = foodById.get(entry.foodId);
           if (!food) return entry;
           return {
@@ -196,12 +212,7 @@
   }
 
   function sumEntries(entries) {
-    return entries.reduce((total, entry) => ({
-      kcal: total.kcal + Number(entry.kcal || 0),
-      carbs: total.carbs + Number(entry.carbs || 0),
-      protein: total.protein + Number(entry.protein || 0),
-      fat: total.fat + Number(entry.fat || 0)
-    }), { kcal: 0, carbs: 0, protein: 0, fat: 0 });
+    return foodNutrition.sum(entries);
   }
 
   function formatNumber(value, digits = 0) {
@@ -216,6 +227,8 @@
     modal: null,
     search: "",
     category: "全部",
+    brand: "全部",
+    brandRegion: "中国大陆",
     selectedFoodId: null,
     foodDraft: { grams: 100, meal: "午餐" },
     selectedLogId: null,
@@ -277,19 +290,19 @@
     `;
   }
 
-  function macroRow(label, value, target) {
+  function macroRow(label, value, target, unknown = 0) {
     const remaining = Math.max(0, target - value);
     const percentage = target > 0 ? clamp((value / target) * 100, 0, 100) : 0;
     return `
       <div class="macro-card">
         <div class="macro-card-head">
           <span>${label}</span>
-          <small>${Math.round(percentage)}%</small>
+          <small>${unknown ? "资料不全" : `${Math.round(percentage)}%`}</small>
         </div>
-        <strong>${formatNumber(remaining, 1)}<small>g</small></strong>
-        <p>今日还差</p>
-        <div class="macro-track" aria-label="${label}已完成 ${Math.round(percentage)}%">
-          <div class="macro-fill" style="width:${percentage}%"></div>
+        <strong>${unknown ? "—" : formatNumber(remaining, 1)}<small>g</small></strong>
+        <p>${unknown ? "部分食物未公布此项" : "今日还差"}</p>
+        <div class="macro-track" aria-label="${unknown ? `${label}数据不完整` : `${label}已完成 ${Math.round(percentage)}%`}">
+          <div class="macro-fill" style="width:${unknown ? 0 : percentage}%"></div>
         </div>
       </div>
     `;
@@ -317,7 +330,7 @@
               <div class="meal-mark" aria-hidden="true">${escapeHtml(entry.name.slice(0, 1))}</div>
               <div>
                 <h3>${escapeHtml(entry.name)}</h3>
-                <p>${formatNumber(entry.grams)}g · ${escapeHtml(entry.measure)} · ${entry.source === "photo" ? "照片确认" : entry.source === "recommendation" ? "推荐方案记录" : "手动记录"}</p>
+                <p>${escapeHtml(logAmount(entry))} · ${escapeHtml(entry.measure)} · ${entry.source === "photo" ? "照片确认" : entry.source === "recommendation" ? "推荐方案记录" : "手动记录"}</p>
               </div>
               <div class="meal-entry-side">
                 <div class="kcal">${formatNumber(entry.kcal)} kcal</div>
@@ -374,16 +387,16 @@
         <section class="section section-card">
           <div class="section-head"><h2>宏量剩余</h2><span>今日还差</span></div>
           <div class="macro-list">
-            ${macroRow("碳水", totals.carbs, state.targets.carbs)}
-            ${macroRow("蛋白质", totals.protein, state.targets.protein)}
-            ${macroRow("脂肪", totals.fat, state.targets.fat)}
+            ${macroRow("碳水", totals.carbs, state.targets.carbs, totals.missing.carbs)}
+            ${macroRow("蛋白质", totals.protein, state.targets.protein, totals.missing.protein)}
+            ${macroRow("脂肪", totals.fat, state.targets.fat, totals.missing.fat)}
           </div>
           <div class="highlight">
             ${icon("target-arrow")}
             <div>
               <span>下一餐建议</span>
-              <h3>还可安排 ${formatNumber(proteinRemaining, 1)}g 蛋白质</h3>
-              <p>先确定蛋白质来源，再补主食与蔬菜。</p>
+              <h3>${totals.missing.protein ? "部分记录未公布蛋白质" : `还可安排 ${formatNumber(proteinRemaining, 1)}g 蛋白质`}</h3>
+              <p>${totals.missing.protein ? "热量仍计入；未知营养不当作零，不据此精算剩余。" : "先确定蛋白质来源，再补主食与蔬菜。"}</p>
             </div>
           </div>
           <button class="button primary full" data-action="go-food">记录下一餐</button>
@@ -405,7 +418,8 @@
     const fields = [["kcal", "热量", "kcal", 0], ["protein", "蛋白质", "g", 1], ["carbs", "碳水", "g", 1], ["fat", "脂肪", "g", 1]];
     return `<div class="meal-budget"><p>本餐分配 ${formatNumber(target.percent, 1)}%</p><table aria-label="${escapeHtml(target.name)}营养目标与摄入"><thead><tr><th scope="col">营养</th><th scope="col">目标</th><th scope="col">已吃</th><th scope="col">剩余 / 超出</th></tr></thead><tbody>${fields.map(([key, label, unit, digits]) => {
       const difference = round(target[key] - consumed[key], digits);
-      return `<tr><th scope="row">${label}<small>${unit}</small></th><td>${formatNumber(target[key], digits)}</td><td>${formatNumber(consumed[key], digits)}</td><td class="${difference < 0 ? "meal-over" : ""}">${difference < 0 ? "超 " : ""}${formatNumber(Math.abs(difference), digits)}</td></tr>`;
+      const unknown = consumed.missing[key] > 0;
+      return `<tr><th scope="row">${label}<small>${unit}</small></th><td>${formatNumber(target[key], digits)}</td><td>${unknown ? `已知 ${formatNumber(consumed[key], digits)}＋` : formatNumber(consumed[key], digits)}</td><td class="${!unknown && difference < 0 ? "meal-over" : ""}">${unknown ? "待核" : `${difference < 0 ? "超 " : ""}${formatNumber(Math.abs(difference), digits)}`}</td></tr>`;
     }).join("")}</tbody></table></div>`;
   }
 
@@ -416,9 +430,11 @@
         ui.category === "全部" ||
         (ui.category === "常用" && commonFoodIds.has(food.id)) ||
         food.category === ui.category;
-      const searchText = [food.name, food.state, ...(food.aliases || [])].join(" ").toLowerCase();
+      const searchText = [food.name, food.state, food.brand || "", food.region || "", ...(food.aliases || [])].join(" ").toLowerCase();
       const searchMatch = !normalized || searchText.includes(normalized);
-      return categoryMatch && searchMatch;
+      const regionMatch = !food.brand || ui.brandRegion === "全部地区" || food.region === ui.brandRegion;
+      const brandMatch = ui.brand === "全部" || food.brand === ui.brand;
+      return categoryMatch && searchMatch && regionMatch && brandMatch;
     });
   }
 
@@ -432,11 +448,11 @@
         <div class="food-index-mark" aria-hidden="true">${escapeHtml(food.name.slice(0, 1))}</div>
         <div>
           <h3>${escapeHtml(food.name)}</h3>
-          <p>${food.state} · 常用 ${food.portion}g<br />碳 ${food.carbs} · 蛋 ${food.protein} · 脂 ${food.fat}</p>
+          <p>${foodNutrition.isServing(food) ? `${escapeHtml(food.region)} · ${escapeHtml(food.servingLabel)}` : `${food.state} · 常用 ${food.portion}g`}<br />碳 ${nutrientText(food.carbs)} · 蛋 ${nutrientText(food.protein)} · 脂 ${nutrientText(food.fat)}</p>
         </div>
         <div class="food-kcal">
           <strong>${food.kcal}</strong>
-          <span>kcal/100g</span>
+          <span>${foodNutrition.isServing(food) ? "kcal/份" : "kcal/100g"}</span>
         </div>
       </button>
     `).join("");
@@ -446,18 +462,23 @@
         <div class="food-intro">
           <p class="page-eyebrow">FOOD INDEX</p>
           <h1 class="page-title">想吃什么，搜一搜。</h1>
-          <p class="page-intro">生重和熟重分别计算，请按实际状态选择。</p>
+          <p class="page-intro">基础食物按克，品牌成品按标准份。地区、规格与生熟状态分别计算。</p>
         </div>
 
         <div class="search-wrap">
           ${icon("search", "search-icon")}
-          <input class="search-input" type="search" value="${escapeHtml(ui.search)}" placeholder="搜索燕麦、鸡胸肉、米饭…" aria-label="搜索食物" data-input="food-search" />
+          <input class="search-input" type="search" value="${escapeHtml(ui.search)}" placeholder="搜索米饭、麦当劳、赛百味…" aria-label="搜索食物" data-input="food-search" />
           ${ui.search ? `<button class="search-clear" data-action="clear-search" aria-label="清空搜索">${icon("x")}</button>` : ""}
         </div>
+        <div class="brand-filters">
+          <label>品牌<select data-input="brand-filter"><option value="全部">全部品牌与基础食物</option>${[...new Set(brandFoods.map((food) => food.brand))].map((brand) => `<option value="${escapeHtml(brand)}" ${ui.brand === brand ? "selected" : ""}>${escapeHtml(brand)}</option>`).join("")}</select></label>
+          <label>品牌数据地区<select data-input="brand-region">${["中国大陆", "中国台湾", "全部地区"].map((region) => `<option ${ui.brandRegion === region ? "selected" : ""}>${region}</option>`).join("")}</select></label>
+        </div>
+        <div class="brand-coverage"><p>${ui.brandRegion === "中国大陆" ? "默认仅显示大陆品牌数据。肯德基、汉堡王目前仅有台湾地区参考，不能用于大陆同名产品。" : "请核对地区：不同市场的同名产品配方、份量可能不同，不能互相套用。"}</p><button class="pill-button" data-action="brand-info">收录范围与说明</button></div>
         <div class="food-browser">
           <div class="chips" aria-label="食物分类">${chips}</div>
           <div class="catalog-panel">
-            <div class="catalog-note"><span>每 100g 营养</span><strong>${visibleFoods.length} / ${library.itemCount}</strong></div>
+            <div class="catalog-note"><span>见条目标注单位</span><strong>${visibleFoods.length} / ${library.itemCount}</strong></div>
             <div class="food-list">
               ${rows || `<div class="no-results">没有匹配结果。<br />换一个名称或分类试试。</div>`}
             </div>
@@ -548,6 +569,31 @@
     `;
   }
 
+  function brandSource(food) {
+    const safeUrl = /^https:\/\//.test(food.sourceUrl || "") ? food.sourceUrl : "";
+    return `<div class="food-source brand-source"><span>官方标准份 · ${escapeHtml(food.region || "原记录地区")}</span>
+      <strong>${escapeHtml(food.standardRecipe || "原标准配方")}</strong>
+      <small>${Number.isFinite(food.servingGrams) ? `官方成品重量 ${food.servingGrams}g／份（不是原料生重）` : "成品克重未公布，不换算为每100g；份数不是克数。"}</small>
+      ${["protein", "carbs", "fat"].some((key) => !Number.isFinite(food[key])) ? '<p class="recipe-warning">三大营养素有未公布项：热量照常计入，未知项不按零计算；该餐不能精算剩余营养推荐。</p>' : ""}
+      <small>${escapeHtml(food.notes || "")}</small>
+      ${food.energyMethod ? `<small>${escapeHtml(food.energyMethod)}</small>` : ""}
+      <small>资料版本：${escapeHtml(food.sourceDate || "官网未标注日期")} · 核对：${escapeHtml(food.verifiedAt || "原记录")}</small>
+      ${safeUrl ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">查看来源：${escapeHtml(food.sourceTitle || "官方营养资料")}</a>` : ""}
+      <small>配方、份量和在售情况可能变化；以购买地当前官方标示为准。</small></div>`;
+  }
+
+  function brandInfoModal() {
+    const metadata = window.BRAND_LIBRARY_METADATA;
+    return `<div class="scrim" data-action="close-modal"></div><section class="sheet" role="dialog" aria-modal="true" aria-label="品牌食物收录说明"><div class="sheet-handle"></div><div class="sheet-head"><div><h2>标准配方，不猜份量。</h2><p>本批 ${brandFoods.length} 个产品规格 · 并非市场全集</p></div><button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button></div>
+      <div class="calculation-notes"><p>大陆 ${metadata.mainlandCount} 个规格；其他地区 ${metadata.otherRegionCount} 个规格单独标明。大杯、小杯、不同配置按独立规格收录，不是品牌全部菜单。</p>
+      <dl class="plan-breakdown">${Object.entries(metadata.brands).map(([brand, count]) => `<div><dt>${escapeHtml(brand)}${["肯德基", "汉堡王"].includes(brand) ? "（台湾参考）" : "（大陆）"}</dt><dd>${count} 个规格</dd></div>`).join("")}</dl>
+      <p>优先采用官方标准成品营养。麦当劳官网以千焦发布，按 kcal = kJ ÷ 4.184 换算并取整；其他品牌保留官方千卡。不是拆解配方反推的精确结果，原料克重未公开时不编造。</p>
+      <p>赛百味轻盈系列资料来自大陆官网公开索引；面包长度、克重与当前在售状态未能直接确认，只适用于所列搭配，不能套用到任意自选三明治。瑞幸按列出的杯型、冷热与糖奶配置记录，“不另外加糖”不代表无糖。</p>
+      <p>未公布的蛋白质、碳水和脂肪显示“未公布”，不会把未知当作零。记录仍计入热量，但该餐剩余营养推荐暂停；可查看整餐计划，或选择资料完整的实际食物。</p>
+      <p>本批未找到可核验的肯德基、汉堡王大陆完整营养表，也未收录星巴克大陆与披萨品牌。台湾条目仅供对应地区使用。品牌配方可能更新，来源和资料日期可在每个条目中查看。</p>
+      <p>品牌成品按份记录，不参与按克自动配餐；套餐请逐项添加，额外酱料、油、饮料需另记。修改份数后重算；历史记录保留当时的数据快照。半份只表示等比例份量，不适用于只吃馅、不吃面包等拆分。</p></div></section>`;
+  }
+
   function foodModal() {
     const food = foodById.get(ui.selectedFoodId);
     if (!food) return "";
@@ -559,19 +605,19 @@
         <div class="sheet-head">
           <div>
             <h2>${escapeHtml(food.name)}</h2>
-            <p>${food.kcal} kcal / 100g · C ${food.carbs} · P ${food.protein} · F ${food.fat}</p>
+            <p>${food.kcal} kcal / ${escapeHtml(foodBasis(food))}<br />碳 ${nutrientText(food.carbs)} · 蛋 ${nutrientText(food.protein)} · 脂 ${nutrientText(food.fat)}</p>
           </div>
           <button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button>
         </div>
         <div class="field-grid">
           <div class="field">
-            <label for="food-grams">实际克数（${food.state}）</label>
-            <input id="food-grams" type="number" min="1" max="2000" value="${ui.foodDraft.grams}" data-input="food-grams" />
+            <label for="food-grams">${foodNutrition.isServing(food) ? "实际份数（半份填 0.5）" : `实际克数（${food.state}）`}</label>
+            <input id="food-grams" type="number" min="0.01" max="${foodNutrition.isServing(food) ? 20 : 2000}" step="0.01" value="${ui.foodDraft.grams}" data-input="food-grams" />
           </div>
           <div class="measure-locked" role="note">
             <span>计量状态已锁定</span>
-            <strong>${food.state}</strong>
-            <small>生、熟营养密度不同。如需另一种状态，请返回搜索对应条目。</small>
+            <strong>${foodNutrition.isServing(food) ? escapeHtml(`${food.region} · 1份 = ${food.servingLabel}`) : food.state}</strong>
+            <small>${foodNutrition.isServing(food) ? "按官方默认配方整份计。换规格、加料、改糖奶请选对应条目或另记，不自动推算。" : "生、熟营养密度不同。如需另一种状态，请返回搜索对应条目。"}</small>
           </div>
           <div class="field">
             <label for="food-meal">加入餐次</label>
@@ -582,31 +628,31 @@
         </div>
         <div class="nutrition-preview" data-role="food-preview">
           <div><strong data-food-preview="kcal">${nutrition.kcal}</strong><span>千卡</span></div>
-          <div><strong data-food-preview="carbs">${nutrition.carbs}g</strong><span>碳水</span></div>
-          <div><strong data-food-preview="protein">${nutrition.protein}g</strong><span>蛋白质</span></div>
-          <div><strong data-food-preview="fat">${nutrition.fat}g</strong><span>脂肪</span></div>
+          <div><strong data-food-preview="carbs">${nutrientText(nutrition.carbs, "g")}</strong><span>碳水</span></div>
+          <div><strong data-food-preview="protein">${nutrientText(nutrition.protein, "g")}</strong><span>蛋白质</span></div>
+          <div><strong data-food-preview="fat">${nutrientText(nutrition.fat, "g")}</strong><span>脂肪</span></div>
         </div>
-        <div class="food-source">
+        ${foodNutrition.isServing(food) ? brandSource(food) : `<div class="food-source">
           <span>数据来源</span>
           <strong>${escapeHtml(food.source)} · FDC ${food.sourceId}</strong>
           <small>${escapeHtml(food.sourceDescription)} · ${escapeHtml(food.energyMethod)}</small>
-        </div>
+        </div>`}
         <button class="button primary full" data-action="add-food">加入${escapeHtml(ui.foodDraft.meal)}</button>
       </section>
     `;
   }
 
   function foodForLog(entry) {
+    if (entry.foodSnapshot?.basis === "serving") return entry.foodSnapshot;
     const currentFood = foodById.get(entry.foodId);
     if (currentFood) return currentFood;
-    const ratio = 100 / Math.max(1, Number(entry.grams) || 1);
+    const serving = entry.quantityUnit === "serving";
+    const ratio = (serving ? 1 : 100) / (Number(entry.grams) || 1);
     return {
+      basis: serving ? "serving" : "100g",
       name: entry.name,
       state: entry.measure || "记录重量",
-      kcal: Number(entry.kcal || 0) * ratio,
-      carbs: Number(entry.carbs || 0) * ratio,
-      protein: Number(entry.protein || 0) * ratio,
-      fat: Number(entry.fat || 0) * ratio,
+      ...Object.fromEntries(["kcal", "carbs", "protein", "fat"].map((key) => [key, Number.isFinite(entry[key]) ? entry[key] * ratio : null])),
       source: "历史记录",
       sourceDescription: "原食物条目已不在当前食物库中"
     };
@@ -624,19 +670,19 @@
         <div class="sheet-head">
           <div>
             <h2>修改${escapeHtml(entry.name)}</h2>
-            <p>${formatNumber(food.kcal)} kcal / 100g · ${escapeHtml(food.state)}</p>
+            <p>${nutrientText(food.kcal)} kcal / ${escapeHtml(foodBasis(food))} · ${escapeHtml(food.state)}</p>
           </div>
           <button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button>
         </div>
         <div class="field-grid">
           <div class="field">
-            <label for="log-grams">实际克数（${escapeHtml(food.state)}）</label>
-            <input id="log-grams" type="number" min="1" max="2000" value="${ui.logDraft.grams}" data-input="log-grams" />
+            <label for="log-grams">${foodNutrition.isServing(food) ? "实际份数（半份填 0.5）" : `实际克数（${escapeHtml(food.state)}）`}</label>
+            <input id="log-grams" type="number" min="0.01" max="${foodNutrition.isServing(food) ? 20 : 2000}" step="0.01" value="${ui.logDraft.grams}" data-input="log-grams" />
           </div>
           <div class="measure-locked" role="note">
             <span>计量状态已锁定</span>
-            <strong>${escapeHtml(food.state)}</strong>
-            <small>修改克数会按当前食物库自动重算热量和三大营养素。</small>
+            <strong>${escapeHtml(foodNutrition.isServing(food) ? `1份 = ${food.servingLabel || "原标准份"}` : food.state)}</strong>
+            <small>${foodNutrition.isServing(food) ? "按记录时保存的标准份营养重算，未公布项仍为未知。" : "修改克数会按当前食物库自动重算热量和三大营养素。"}</small>
           </div>
           <div class="field">
             <label for="log-meal">所属餐次</label>
@@ -647,10 +693,11 @@
         </div>
         <div class="nutrition-preview" data-role="log-preview">
           <div><strong data-log-preview="kcal">${nutrition.kcal}</strong><span>千卡</span></div>
-          <div><strong data-log-preview="carbs">${nutrition.carbs}g</strong><span>碳水</span></div>
-          <div><strong data-log-preview="protein">${nutrition.protein}g</strong><span>蛋白质</span></div>
-          <div><strong data-log-preview="fat">${nutrition.fat}g</strong><span>脂肪</span></div>
+          <div><strong data-log-preview="carbs">${nutrientText(nutrition.carbs, "g")}</strong><span>碳水</span></div>
+          <div><strong data-log-preview="protein">${nutrientText(nutrition.protein, "g")}</strong><span>蛋白质</span></div>
+          <div><strong data-log-preview="fat">${nutrientText(nutrition.fat, "g")}</strong><span>脂肪</span></div>
         </div>
+        ${foodNutrition.isServing(food) ? brandSource(food) : ""}
         <div class="edit-actions">
           <button class="button primary full" data-action="save-log">保存修改</button>
           <button class="button danger full" data-action="delete-log">删除这条记录</button>
@@ -828,6 +875,7 @@
     const recorded = todayLogs().filter((entry) => entry.meal === ui.recipeMeal);
     const consumed = sumEntries(recorded);
     const target = Object.fromEntries(["kcal", "protein", "carbs", "fat"].map((key) => [key, round(Math.max(0, fullTarget[key] - (ui.recipeMode === "remaining" ? consumed[key] : 0)), key === "kcal" ? 0 : 1)]));
+    if (ui.recipeMode === "remaining" && Object.values(consumed.missing).some((count) => count > 0)) return { target, fullTarget, consumed, recorded, blocked: "本餐有食物未公布营养素，无法可靠估算剩余目标。热量仍计入；可切换查看整餐目标，但不把未知营养当作零。" };
     return { target, fullTarget, consumed, recorded, blocked: target.kcal < 100 ? "当前可分配热量不足 100 kcal，暂不自动配整餐。可查看整餐方案，或直接手动记录实际吃的食物，无需为凑数继续添加。" : "" };
   }
 
@@ -836,7 +884,7 @@
   function latestStoredState() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (saved && [1, 2, 3].includes(saved.version) && Array.isArray(saved.logs) && saved.profile && saved.targets) return { ...state, ...saved };
+      if (saved && [1, 2, 3].includes(saved.version) && Array.isArray(saved.logs) && saved.profile && saved.targets) return { ...state, ...saved, logs: saved.logs.map(restoreServingLog) };
     } catch (error) { console.warn("无法读取其他页面的最新记录。", error); }
     return state;
   }
@@ -940,13 +988,13 @@
 
   function replacementRows() {
     const term = ui.replacementSearch.trim().toLowerCase();
-    const matches = foods.filter((food) => [food.name, food.state, ...(food.aliases || [])].join(" ").toLowerCase().includes(term));
+    const matches = foods.filter((food) => !foodNutrition.isServing(food) && [food.name, food.state, ...(food.aliases || [])].join(" ").toLowerCase().includes(term));
     return matches.length ? matches.map((food) => `<button class="recipe-replacement-row" data-replacement-id="${escapeHtml(food.id)}" ${food.id === "brazil_nuts" ? "disabled" : ""}><span><strong>${escapeHtml(food.name)}</strong><small>${escapeHtml(weighingLabel(food))}${food.id === "brazil_nuts" ? " · 不自动配量，可在食物库手动记录" : ""}</small></span><span>${food.kcal}<small>kcal / 100g</small></span></button>`).join("") : '<p class="empty-meal">没有找到，可换个名称或搜索生／熟。</p>';
   }
 
   function replacementModal() {
     const current = foodById.get(ui.recipeItems[ui.replacementIndex]?.foodId);
-    return `<div class="scrim" data-action="back-to-recipe"></div><section class="sheet" role="dialog" aria-modal="true" aria-label="替换推荐食物"><div class="sheet-handle"></div><div class="sheet-head"><div><h2>换成想吃的食物</h2><p>正在替换：${escapeHtml(current?.name || "食物")}</p></div><button class="close-button" data-action="back-to-recipe" aria-label="返回方案">${icon("x")}</button></div><p class="microcopy">选择后会重新估算整组克数，不是同克数互换。注意区分生重、熟重；如无法满足营养目标，会保留实际差额。</p><div class="field"><label for="replacement-search">搜索食物</label><input id="replacement-search" type="search" placeholder="例如：米饭、生米、牛肉、豆腐" value="${escapeHtml(ui.replacementSearch)}" /></div><div id="replacement-results" class="recipe-replacement-list">${replacementRows()}</div></section>`;
+    return `<div class="scrim" data-action="back-to-recipe"></div><section class="sheet" role="dialog" aria-modal="true" aria-label="替换推荐食物"><div class="sheet-handle"></div><div class="sheet-head"><div><h2>换成想吃的食物</h2><p>正在替换：${escapeHtml(current?.name || "食物")}</p></div><button class="close-button" data-action="back-to-recipe" aria-label="返回方案">${icon("x")}</button></div><p class="microcopy">选择后会重新估算整组克数，不是同克数互换。注意区分生重、熟重；如无法满足营养目标，会保留实际差额。品牌成品暂不参与按克配餐，请在食物库按标准份记录。</p><div class="field"><label for="replacement-search">搜索食物</label><input id="replacement-search" type="search" placeholder="例如：米饭、生米、牛肉、豆腐" value="${escapeHtml(ui.replacementSearch)}" /></div><div id="replacement-results" class="recipe-replacement-list">${replacementRows()}</div></section>`;
   }
 
   function replaceRecipeFood(foodId) {
@@ -987,6 +1035,7 @@
 
   function renderModal() {
     if (ui.modal === "food") return foodModal();
+    if (ui.modal === "brand-info") return brandInfoModal();
     if (ui.modal === "log") return logModal();
     if (ui.modal === "formula") return formulaModal();
     if (ui.modal === "profile") return profileModal();
@@ -1054,9 +1103,9 @@
     const nutrition = nutrientsFor(food, ui.foodDraft.grams);
     const values = {
       kcal: nutrition.kcal,
-      carbs: `${nutrition.carbs}g`,
-      protein: `${nutrition.protein}g`,
-      fat: `${nutrition.fat}g`
+      carbs: nutrientText(nutrition.carbs, "g"),
+      protein: nutrientText(nutrition.protein, "g"),
+      fat: nutrientText(nutrition.fat, "g")
     };
     Object.entries(values).forEach(([key, value]) => {
       const node = document.querySelector(`[data-food-preview="${key}"]`);
@@ -1070,9 +1119,9 @@
     const nutrition = nutrientsFor(foodForLog(entry), ui.logDraft.grams);
     const values = {
       kcal: nutrition.kcal,
-      carbs: `${nutrition.carbs}g`,
-      protein: `${nutrition.protein}g`,
-      fat: `${nutrition.fat}g`
+      carbs: nutrientText(nutrition.carbs, "g"),
+      protein: nutrientText(nutrition.protein, "g"),
+      fat: nutrientText(nutrition.fat, "g")
     };
     Object.entries(values).forEach(([key, value]) => {
       const node = document.querySelector(`[data-log-preview="${key}"]`);
@@ -1082,17 +1131,17 @@
 
   function saveLog() {
     const grams = Number(ui.logDraft.grams);
-    if (!Number.isFinite(grams) || grams <= 0 || grams > 2000) {
-      showToast("请输入 1–2000g 之间的克数");
-      return;
-    }
+    state = latestStoredState();
     const index = state.logs.findIndex((item) => item.id === ui.selectedLogId);
     if (index < 0) return;
     const current = state.logs[index];
     const food = foodForLog(current);
+    const checked = foodNutrition.validateAmount(food, grams);
+    if (!checked.ok) { showToast(checked.error); return; }
     state.logs[index] = {
       ...current,
       name: food.name,
+      // Legacy field name: quantityUnit distinguishes grams from standard servings.
       grams,
       meal: ui.logDraft.meal,
       measure: food.state,
@@ -1100,13 +1149,14 @@
     };
     saveState();
     ui.modal = null;
-    showToast(`${food.name}已更新为 ${formatNumber(grams)}g · ${ui.logDraft.meal}`);
+    showToast(`${food.name}已更新为 ${amountText(food, grams)} · ${ui.logDraft.meal}`);
   }
 
   function deleteLog() {
+    state = latestStoredState();
     const entry = state.logs.find((item) => item.id === ui.selectedLogId);
     if (!entry) return;
-    const confirmed = window.confirm(`确定删除“${entry.name} ${formatNumber(entry.grams)}g”这条记录吗？`);
+    const confirmed = window.confirm(`确定删除“${entry.name} ${logAmount(entry)}”这条记录吗？`);
     if (!confirmed) return;
     state.logs = state.logs.filter((item) => item.id !== entry.id);
     saveState();
@@ -1197,9 +1247,15 @@
     document.querySelectorAll("[data-category]").forEach((button) => {
       button.addEventListener("click", () => {
         ui.category = button.dataset.category;
+        if (ui.category !== "品牌食品" && ui.category !== "全部") ui.brand = "全部";
         render();
       });
     });
+
+    const brandFilter = document.querySelector('[data-input="brand-filter"]');
+    if (brandFilter) brandFilter.addEventListener("change", () => { ui.brand = brandFilter.value; if (ui.brand !== "全部") ui.category = "品牌食品"; render(); });
+    const brandRegion = document.querySelector('[data-input="brand-region"]');
+    if (brandRegion) brandRegion.addEventListener("change", () => { ui.brandRegion = brandRegion.value; render(); });
 
     document.querySelectorAll("[data-food-id]").forEach((button) => {
       button.addEventListener("click", () => openFood(button.dataset.foodId));
@@ -1315,7 +1371,10 @@
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async (event) => {
         const action = button.dataset.action;
-        if (action === "open-profile") {
+        if (action === "brand-info") {
+          ui.modal = "brand-info";
+          render();
+        } else if (action === "open-profile") {
           ui.profileDraft = { ...state.profile };
           ui.modal = "profile";
           render();
@@ -1370,16 +1429,15 @@
           ui.search = "";
           render();
         } else if (action === "add-food") {
-          if (!Number.isFinite(ui.foodDraft.grams) || ui.foodDraft.grams < 1 || ui.foodDraft.grams > 2000) {
-            showToast("请输入 1–2000g 之间的食物重量");
-            return;
-          }
+          const checked = foodNutrition.validateAmount(foodById.get(ui.selectedFoodId), ui.foodDraft.grams);
+          if (!checked.ok) { showToast(checked.error); return; }
+          state = latestStoredState();
           const log = makeLog(ui.selectedFoodId, ui.foodDraft.grams, ui.foodDraft.meal, "manual");
           state.logs.push(log);
           state.recentFoodIds = [ui.selectedFoodId, ...state.recentFoodIds.filter((id) => id !== ui.selectedFoodId)].slice(0, 12);
           saveState();
           ui.modal = null;
-          showToast(`${log.name} ${formatNumber(log.grams)}g 已加入${log.meal}`);
+          showToast(`${log.name} ${logAmount(log)} 已加入${log.meal}`);
         } else if (action === "save-log") {
           saveLog();
         } else if (action === "delete-log") {
@@ -1433,7 +1491,7 @@
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=10", { updateViaCache: "none" }).catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=11", { updateViaCache: "none" }).catch((error) => {
         console.warn("离线缓存注册失败。", error);
       });
     });

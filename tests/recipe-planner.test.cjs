@@ -99,3 +99,16 @@ test("invalid targets, unknown/duplicate foods, and invalid manual grams surface
     assert.equal(summarize(foods, [{ foodId: "rice_cooked", grams }]).ok, false);
   }
 });
+
+test("serving-based products cannot be passed to gram-based recipe operations", () => {
+  const product = { id: "brand-whole-item", basis: "serving", kcal: 485, protein: 26, carbs: 47, fat: 20 };
+  const foodLibrary = [...foods, product];
+  const generated = optimize(foodLibrary, target, ["rice_cooked", product.id]);
+  const manual = summarize(foodLibrary, [{ foodId: product.id, grams: 100 }]);
+  for (const result of [generated, manual]) {
+    assert.equal(result.ok, false);
+    assert.match(result.errors[0], /按份商品请单独记录/);
+    assert.deepEqual(result.items, []);
+    assert.equal(result.totals, null);
+  }
+});
