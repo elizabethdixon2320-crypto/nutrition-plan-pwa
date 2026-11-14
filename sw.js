@@ -1,12 +1,13 @@
-const CACHE_NAME = "nutrition-plan-v8";
+const CACHE_NAME = "nutrition-plan-v9";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=8",
-  "./data.js?v=8",
-  "./chart.js?v=8",
-  "./nutrition.js?v=8",
-  "./app.js?v=8",
+  "./styles.css?v=9",
+  "./data.js?v=9",
+  "./chart.js?v=9",
+  "./nutrition.js?v=9",
+  "./meal-planner.js?v=9",
+  "./app.js?v=9",
   "./manifest.webmanifest",
   "./icons/icon.svg",
   "./icons/ui/home.svg",

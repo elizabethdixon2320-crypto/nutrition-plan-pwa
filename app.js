@@ -4,6 +4,7 @@
   const STORAGE_KEY = "personal-nutrition-plan-v1";
   const { foods, categories, library } = window.NUTRITION_DATA;
   const planner = window.NutritionPlanner;
+  const mealPlanner = window.MealPlanner;
   const foodById = new Map(foods.map((food) => [food.id, food]));
   const appRoot = document.getElementById("app");
 
@@ -115,6 +116,7 @@
         source: "视频示例目标"
       },
       plan: null,
+      mealSchedule: { defaultMeals: mealPlanner.preset(3), byDate: {} },
       logs: breakfast,
       weights: seedWeights(),
       historicalCompletion: { carbs: 83, protein: 91, fat: 80 },
@@ -139,6 +141,7 @@
         });
         saved.profile = { age: null, heightCm: null, bodyFatPct: null, formula: "auto", dailyActivity: "sedentary", trainingDays: null, trainingMinutes: null, goal: "lose", ...saved.profile };
         saved.plan = saved.plan || null;
+        saved.mealSchedule = saved.mealSchedule || { defaultMeals: mealPlanner.preset(3), byDate: {} };
         // Keep additive storage changes readable by an older cached app shell.
         saved.version = 2;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
@@ -170,6 +173,25 @@
     return state.logs.filter((entry) => entry.date === today);
   }
 
+  function mealPlanFor(date = toDateKey(new Date())) {
+    const schedule = state.mealSchedule || {};
+    const custom = mealPlanner.validate(schedule.byDate?.[date]);
+    if (custom.ok) return custom.meals;
+    const effectiveDates = Object.keys(schedule.defaultsByDate || {}).filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key) && key <= date).sort().reverse();
+    for (const key of effectiveDates) {
+      const defaults = mealPlanner.validate(schedule.defaultsByDate[key]);
+      if (defaults.ok) return defaults.meals;
+    }
+    const fallback = mealPlanner.validate(schedule.defaultMeals);
+    return fallback.ok ? fallback.meals : mealPlanner.preset(3);
+  }
+
+  function mealOptions(selected) {
+    const names = mealPlanFor().map((meal) => meal.name);
+    if (selected && !names.includes(selected)) names.push(selected);
+    return names.map((name) => `<option value="${escapeHtml(name)}" ${selected === name ? "selected" : ""}>${escapeHtml(name)}${mealPlanFor().some((meal) => meal.name === name) ? "" : "（计划外）"}</option>`).join("");
+  }
+
   function sumEntries(entries) {
     return entries.reduce((total, entry) => ({
       kcal: total.kcal + Number(entry.kcal || 0),
@@ -198,6 +220,11 @@
     toast: "",
     recalcMessage: "",
     profileDraft: null,
+    mealDraft: null,
+    mealDate: null,
+    mealAsDefault: false,
+    preferredMeal: null,
+    renderedDate: toDateKey(new Date()),
     deferredInstallPrompt: null,
     online: navigator.onLine
   };
@@ -260,11 +287,17 @@
     const totals = sumEntries(entries);
     const remainingKcal = Math.max(0, targetCalories() - totals.kcal);
     const proteinRemaining = Math.max(0, state.targets.protein - totals.protein);
-    const meals = ["早餐", "午餐", "晚餐", "加餐"];
+    const configuredMeals = mealPlanFor();
+    const allocation = state.plan ? mealPlanner.allocate({ ...state.targets, kcal: targetCalories() }, configuredMeals) : { meals: [] };
+    const plannedNames = configuredMeals.map((meal) => meal.name);
+    const extraNames = [...new Set(entries.map((entry) => entry.meal))].filter((name) => !plannedNames.includes(name));
+    const meals = [...plannedNames, ...extraNames];
 
     const mealHtml = meals.map((meal) => {
       const mealEntries = entries.filter((entry) => entry.meal === meal);
       const mealTotal = sumEntries(mealEntries);
+      const mealTarget = allocation.meals.find((item) => item.name === meal);
+      const isPlanned = plannedNames.includes(meal);
       const rows = mealEntries.length
         ? mealEntries.map((entry) => `
             <button class="meal-entry" data-log-id="${escapeHtml(entry.id)}" aria-label="修改${escapeHtml(entry.name)}记录">
@@ -281,12 +314,14 @@
           `).join("")
         : `<div class="empty-meal">还没有记录</div>`;
       return `
-        <section class="meal-group">
+        <section class="meal-group ${isPlanned ? "planned-meal" : "unplanned-meal"}" data-meal-name="${escapeHtml(meal)}">
           <div class="meal-group-head">
-            <strong>${meal}</strong>
+            <strong>${escapeHtml(meal)}${!isPlanned ? '<small class="unplanned-label">计划外记录</small>' : ""}</strong>
             <span>${formatNumber(mealTotal.kcal)} kcal</span>
           </div>
+          ${mealTarget ? mealBudget(mealTarget, mealTotal) : `<p class="microcopy">${isPlanned ? "完善个人资料后，将自动生成本餐营养目标。" : "仍计入每日总量，不额外增加目标；点击记录可移到计划内餐次。"}</p>`}
           ${rows}
+          ${isPlanned ? `<button class="button secondary full meal-record-button" data-action="record-meal" data-meal="${escapeHtml(meal)}">为${escapeHtml(meal)}添加食物</button>` : ""}
         </section>
       `;
     }).join("");
@@ -342,13 +377,22 @@
 
         <section class="section section-card">
           <div class="section-head">
-            <h2>今日餐次</h2>
-            <span>${entries.length} 条记录</span>
+            <h2>今日 ${configuredMeals.length} 餐</h2>
+            <button class="pill-button" data-action="open-meals">调整餐次</button>
           </div>
+          <p class="microcopy">${state.plan ? `每日 ${formatNumber(targetCalories())} kcal 按比例分配；改变餐数不改变每日总量。` : "先在个人资料生成每日目标，再查看每餐分配。"}${extraNames.length ? " 当前有计划外记录，每日剩余量请以上方汇总为准。" : ""}</p>
           <div class="meal-groups">${mealHtml}</div>
         </section>
       </main>
     `;
+  }
+
+  function mealBudget(target, consumed) {
+    const fields = [["kcal", "热量", "kcal", 0], ["protein", "蛋白质", "g", 1], ["carbs", "碳水", "g", 1], ["fat", "脂肪", "g", 1]];
+    return `<div class="meal-budget"><p>本餐分配 ${formatNumber(target.percent, 1)}%</p><table aria-label="${escapeHtml(target.name)}营养目标与摄入"><thead><tr><th scope="col">营养</th><th scope="col">目标</th><th scope="col">已吃</th><th scope="col">剩余 / 超出</th></tr></thead><tbody>${fields.map(([key, label, unit, digits]) => {
+      const difference = round(target[key] - consumed[key], digits);
+      return `<tr><th scope="row">${label}<small>${unit}</small></th><td>${formatNumber(target[key], digits)}</td><td>${formatNumber(consumed[key], digits)}</td><td class="${difference < 0 ? "meal-over" : ""}">${difference < 0 ? "超 " : ""}${formatNumber(Math.abs(difference), digits)}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
   }
 
   function filteredFoods() {
@@ -508,7 +552,7 @@
         <div class="field-grid">
           <div class="field">
             <label for="food-grams">实际克数（${food.state}）</label>
-            <input id="food-grams" type="number" min="0" max="2000" value="${ui.foodDraft.grams}" data-input="food-grams" />
+            <input id="food-grams" type="number" min="1" max="2000" value="${ui.foodDraft.grams}" data-input="food-grams" />
           </div>
           <div class="measure-locked" role="note">
             <span>计量状态已锁定</span>
@@ -518,7 +562,7 @@
           <div class="field">
             <label for="food-meal">加入餐次</label>
             <select id="food-meal" data-input="food-meal">
-              ${["早餐", "午餐", "晚餐", "加餐"].map((meal) => `<option ${ui.foodDraft.meal === meal ? "selected" : ""}>${meal}</option>`).join("")}
+              ${mealOptions(ui.foodDraft.meal)}
             </select>
           </div>
         </div>
@@ -533,7 +577,7 @@
           <strong>${escapeHtml(food.source)} · FDC ${food.sourceId}</strong>
           <small>${escapeHtml(food.sourceDescription)} · ${escapeHtml(food.energyMethod)}</small>
         </div>
-        <button class="button primary full" data-action="add-food">加入${ui.foodDraft.meal}</button>
+        <button class="button primary full" data-action="add-food">加入${escapeHtml(ui.foodDraft.meal)}</button>
       </section>
     `;
   }
@@ -583,7 +627,7 @@
           <div class="field">
             <label for="log-meal">所属餐次</label>
             <select id="log-meal" data-input="log-meal">
-              ${["早餐", "午餐", "晚餐", "加餐"].map((meal) => `<option ${ui.logDraft.meal === meal ? "selected" : ""}>${meal}</option>`).join("")}
+              ${mealOptions(ui.logDraft.meal)}
             </select>
           </div>
         </div>
@@ -622,7 +666,7 @@
           <p>活动换算是本工具的粗略假设，并非针对个人的测量或经过验证的预测模型。减脂模式先取维持热量的 85%（缺口 15%），维持模式取 100%，最后取整到 50 kcal。训练日与休息日采用相同的日均目标。</p>
           <h3>3. 分配营养和餐次</h3>
           <p>以规律力量训练成人为参考：蛋白质 2 g/kg、脂肪 0.8 g/kg，剩余热量分给碳水（蛋白质／碳水各 4 kcal/g，脂肪 9 kcal/g）。这是可调整的起点，不是人人必须达到的固定比例。</p>
-          <p>每日总量可以只分三餐，无需加餐。连续记录 2–3 周，用晨起体重的 7 日均值、饥饿感和训练表现复盘；本工具不会自行根据单日体重涨跌加大缺口。</p>
+          <p>在首页“调整餐次”中按实际安排分配每日总量，不要求加餐。连续记录 2–3 周，用晨起体重的 7 日均值、饥饿感和训练表现复盘；本工具不会自行根据单日体重涨跌加大缺口。</p>
           <p>仅供 18–80 岁健康成人估算；未成年人、孕期／哺乳期、有疾病或进食障碍风险者请咨询医生或注册营养师。输入范围和低热量拦截不是安全保证。</p>
           <p>资料来源：<a href="https://pubmed.ncbi.nlm.nih.gov/2305711/" target="_blank" rel="noopener noreferrer">Mifflin 原始研究</a> · <a href="https://ajcn.nutrition.org/article/S0002-9165%2823%2931936-1/fulltext" target="_blank" rel="noopener noreferrer">Cunningham 1991 去脂体重公式</a> · <a href="https://pubmed.ncbi.nlm.nih.gov/28642676/" target="_blank" rel="noopener noreferrer">ISSN 蛋白质立场</a> · <a href="https://www.niddk.nih.gov/health-information/weight-management/body-weight-planner" target="_blank" rel="noopener noreferrer">NIH 体重规划适用范围</a></p>
         </div>
@@ -689,7 +733,7 @@
       <p class="microcopy">每周训练 ${formatNumber(p.trainingHours, 1)} 小时，已计入活动系数；无需另加运动热量。${p.leanMassKg !== null ? `去脂体重约 ${formatNumber(p.leanMassKg, 1)} kg。` : "未提供体脂，采用身高、体重、年龄和性别公式。"}</p>
       <div class="nutrition-preview"><div><strong>${formatNumber(p.carbs, 1)}g</strong><span>碳水</span></div><div><strong>${p.protein}g</strong><span>蛋白质</span></div><div><strong>${p.fat}g</strong><span>脂肪</span></div></div>
       ${p.leanKcal !== null ? `<p class="microcopy">静息消耗对照：身高体重法 ${formatNumber(p.mifflinKcal)} / 体脂法 ${formatNumber(p.leanKcal)} kcal。两者是估算，不代表测量结果；体脂法不一定更准。</p>` : ""}
-      <p class="microcopy">总量可分三餐，不要求加餐。观察 2–3 周体重均值和训练表现后再调整。</p>`;
+      <p class="microcopy">每日总量可在首页按餐次分配，不要求加餐。观察 2–3 周体重均值和训练表现后再调整。</p>`;
   }
 
   function readProfileForm() {
@@ -701,15 +745,78 @@
     return profile;
   }
 
+  function mealsModal() {
+    const draft = ui.mealDraft || mealPlanFor();
+    return `<div class="scrim" data-action="close-modal"></div>
+      <section class="sheet" role="dialog" aria-modal="true" aria-label="调整餐次">
+        <div class="sheet-handle"></div>
+        <div class="sheet-head"><div><h2>安排一天怎么吃</h2><p>按每日目标分餐，总量不变</p></div><button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button></div>
+        <div class="field"><label for="meal-date">调整哪一天</label><input id="meal-date" data-meal-date type="date" min="${toDateKey(new Date())}" value="${escapeHtml(ui.mealDate)}" /></div><p class="microcopy">切换日期会读取那一天的安排，请先保存当前编辑。</p>
+        <fieldset class="meal-count-field"><legend>一天吃几餐</legend><div class="meal-count-options">${[1, 2, 3, 4, 5, 6].map((count) => `<button type="button" data-action="set-meal-count" data-count="${count}" aria-pressed="${draft.length === count}">${count} 餐</button>`).join("")}</div></fieldset>
+        <div class="section-head meal-ratio-heading"><h3>餐名与分配比例</h3><button class="pill-button" data-action="equalize-meals">平均分配</button></div>
+        <p class="microcopy">每餐按相同比例分配热量、蛋白质、碳水和脂肪。比例合计需为 100%。比例只是安排示例，不是固定的营养建议。</p>
+        <div class="meal-editor">${draft.map((meal, index) => `<div class="meal-editor-row"><div class="field"><label for="meal-name-${index}">第 ${index + 1} 餐名称</label><input id="meal-name-${index}" data-meal-index="${index}" data-meal-field="name" maxlength="12" value="${escapeHtml(meal.name)}" /></div><div class="field"><label for="meal-percent-${index}">占全天 %</label><input id="meal-percent-${index}" data-meal-index="${index}" data-meal-field="percent" type="number" inputmode="decimal" min="0.1" max="100" step="0.1" value="${meal.percent ?? ""}" /></div></div>`).join("")}</div>
+        <div id="meal-preview" class="meal-allocation-preview" aria-live="polite">${mealAllocationPreview(draft)}</div>
+        <label class="meal-default-toggle"><input type="checkbox" data-meal-default ${ui.mealAsDefault ? "checked" : ""} /><span>也从这天起用作默认安排<small>未勾选仅改变所选日期；不改变更早的日期，已单独安排的日期也不受影响。</small></span></label>
+        <button class="button primary full" data-action="save-meals">保存餐次安排</button>
+        <p class="microcopy">减少餐次或改名不会删除或自动移动食物。原餐次记录会保留在“计划外记录”中，仍计入全天；可点记录修改所属餐次。营养量为宏量分配，不包含维生素／矿物质；不自动生成食谱。餐数选择不代表一日一餐更适合你。</p>
+      </section>`;
+  }
+
+  function mealAllocationPreview(meals) {
+    const checked = mealPlanner.validate(meals);
+    const total = meals.reduce((sum, meal) => sum + (Number.isFinite(meal.percent) ? meal.percent : 0), 0);
+    const heading = `<p class="meal-percent-total">比例合计 <strong>${formatNumber(total, 1)}%</strong> / 100%</p>`;
+    if (!checked.ok) return `${heading}<p class="plan-errors" role="status">${checked.errors.map(escapeHtml).join("；")}</p>`;
+    if (!state.plan) return `${heading}<p class="microcopy">可先保存餐次；完善个人资料并生成每日目标后，会自动计算每餐营养量。</p>`;
+    const result = mealPlanner.allocate({ ...state.targets, kcal: targetCalories() }, checked.meals);
+    if (!result.ok) return `${heading}<p class="plan-errors">${result.errors.map(escapeHtml).join("；")}</p>`;
+    return `${heading}<p class="microcopy">按当前每日 ${formatNumber(targetCalories())} kcal 目标预览；以后更新每日目标，各餐会按比例同步更新。</p>
+      <div class="meal-preview-list">${result.meals.map((meal) => `<div class="meal-preview-item"><div><strong>${escapeHtml(meal.name)}</strong><span>${formatNumber(meal.kcal)} kcal</span></div><p>蛋白质 ${formatNumber(meal.protein, 1)}g · 碳水 ${formatNumber(meal.carbs, 1)}g · 脂肪 ${formatNumber(meal.fat, 1)}g</p></div>`).join("")}</div>`;
+  }
+
+  function openMeals() {
+    ui.mealDate = toDateKey(new Date());
+    ui.mealDraft = mealPlanFor(ui.mealDate);
+    ui.mealAsDefault = false;
+    ui.modal = "meals";
+    render();
+  }
+
+  function saveMeals() {
+    const checked = mealPlanner.validate(ui.mealDraft);
+    const date = ui.mealDate;
+    const parsedDate = new Date(`${date}T12:00:00`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "") || !Number.isFinite(parsedDate.getTime()) || toDateKey(parsedDate) !== date || date < toDateKey(new Date())) {
+      document.getElementById("meal-preview").innerHTML = '<p class="plan-errors" role="alert">请选择今天或未来的有效日期。</p>';
+      return;
+    }
+    if (!checked.ok) {
+      document.getElementById("meal-preview").innerHTML = mealAllocationPreview(ui.mealDraft);
+      document.getElementById("meal-preview").scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const schedule = state.mealSchedule || { defaultMeals: mealPlanner.preset(3), byDate: {} };
+    schedule.byDate = { ...schedule.byDate, [date]: checked.meals };
+    if (ui.mealAsDefault) schedule.defaultsByDate = { ...schedule.defaultsByDate, [date]: checked.meals.map((meal) => ({ ...meal })) };
+    state.mealSchedule = schedule;
+    saveState();
+    ui.modal = null;
+    ui.preferredMeal = null;
+    showToast(`${date === toDateKey(new Date()) ? "今日" : date}已安排 ${checked.meals.length} 餐${ui.mealAsDefault ? "，并设为默认" : ""}；食物记录已保留`);
+  }
+
   function renderModal() {
     if (ui.modal === "food") return foodModal();
     if (ui.modal === "log") return logModal();
     if (ui.modal === "formula") return formulaModal();
     if (ui.modal === "profile") return profileModal();
+    if (ui.modal === "meals") return mealsModal();
     return "";
   }
 
   function render() {
+    ui.renderedDate = toDateKey(new Date());
     const screens = {
       today: renderToday,
       food: renderFood,
@@ -742,7 +849,7 @@
     ui.selectedFoodId = foodId;
     ui.foodDraft = {
       grams: food.portion,
-      meal: "午餐"
+      meal: mealPlanFor().some((meal) => meal.name === ui.preferredMeal) ? ui.preferredMeal : mealPlanFor()[0].name
     };
     ui.modal = "food";
     render();
@@ -982,6 +1089,23 @@
       });
     });
 
+    document.querySelectorAll("[data-meal-field]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const field = input.dataset.mealField;
+        ui.mealDraft[Number(input.dataset.mealIndex)][field] = field === "name" ? input.value : (input.value.trim() === "" ? null : Number(input.value));
+        document.getElementById("meal-preview").innerHTML = mealAllocationPreview(ui.mealDraft);
+      });
+    });
+    const mealDate = document.querySelector("[data-meal-date]");
+    if (mealDate) mealDate.addEventListener("change", () => {
+      ui.mealDate = mealDate.value;
+      ui.mealDraft = mealPlanFor(ui.mealDate);
+      ui.mealAsDefault = false;
+      render();
+    });
+    const mealDefault = document.querySelector("[data-meal-default]");
+    if (mealDefault) mealDefault.addEventListener("change", () => { ui.mealAsDefault = mealDefault.checked; });
+
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async (event) => {
         const action = button.dataset.action;
@@ -992,6 +1116,21 @@
         } else if (action === "open-formula") {
           ui.modal = "formula";
           render();
+        } else if (action === "open-meals") {
+          openMeals();
+        } else if (action === "set-meal-count") {
+          ui.mealDraft = mealPlanner.preset(Number(button.dataset.count));
+          render();
+        } else if (action === "equalize-meals") {
+          const count = ui.mealDraft.length;
+          const base = Math.floor(1000 / count);
+          ui.mealDraft = ui.mealDraft.map((meal, index) => ({ ...meal, percent: (base + (index < 1000 % count ? 1 : 0)) / 10 }));
+          render();
+        } else if (action === "save-meals") {
+          saveMeals();
+        } else if (action === "record-meal") {
+          ui.preferredMeal = button.dataset.meal;
+          navigate("food");
         } else if (action === "close-modal") {
           ui.modal = null;
           ui.profileDraft = null;
@@ -1004,6 +1143,10 @@
           ui.search = "";
           render();
         } else if (action === "add-food") {
+          if (!Number.isFinite(ui.foodDraft.grams) || ui.foodDraft.grams < 1 || ui.foodDraft.grams > 2000) {
+            showToast("请输入 1–2000g 之间的食物重量");
+            return;
+          }
           const log = makeLog(ui.selectedFoodId, ui.foodDraft.grams, ui.foodDraft.meal, "manual");
           state.logs.push(log);
           state.recentFoodIds = [ui.selectedFoodId, ...state.recentFoodIds.filter((id) => id !== ui.selectedFoodId)].slice(0, 12);
@@ -1047,9 +1190,17 @@
     render();
   });
 
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !ui.modal) render();
+  });
+
+  setInterval(() => {
+    if (!ui.modal && ui.renderedDate !== toDateKey(new Date())) render();
+  }, 30000);
+
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=8", { updateViaCache: "none" }).catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=9", { updateViaCache: "none" }).catch((error) => {
         console.warn("离线缓存注册失败。", error);
       });
     });
