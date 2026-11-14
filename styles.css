@@ -1280,3 +1280,21 @@ select:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+.plan-notice { padding: 14px; margin-bottom: 20px; background: #f1f1ef; border-radius: 12px; }
+.plan-notice strong { font-size: 15px; }
+.plan-notice p, .plan-summary { font-size: 12px; line-height: 1.7; color: #62625e; }
+.plan-summary { margin: 18px 0 0; padding: 0 20px 14px; }
+.profile-preview { margin-top: 24px; padding: 18px; background: #f5f5f3; border-radius: 16px; }
+.profile-preview h3, .calculation-notes h3 { font-size: 15px; line-height: 1.6; }
+.plan-kcal { margin: 12px 0; font-size: 38px; font-weight: 650; letter-spacing: -1px; }
+.plan-kcal small { font-size: 13px; font-weight: 400; letter-spacing: 0; }
+.plan-breakdown { margin: 16px 0; font-size: 13px; }
+.plan-breakdown > div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #e5e5e1; }
+.plan-breakdown dt { color: #686864; }
+.plan-breakdown dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.plan-errors { margin: 0; font-size: 13px; line-height: 1.8; }
+.calculation-notes { font-size: 13px; line-height: 1.9; margin: 22px 0; overflow-wrap: anywhere; }
+.calculation-notes a { color: inherit; text-decoration: underline; }
+.field input, .field select { min-width: 0; font-size: 16px; }
+.field select { white-space: normal; }

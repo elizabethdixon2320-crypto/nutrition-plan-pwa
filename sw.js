@@ -1,11 +1,12 @@
-const CACHE_NAME = "nutrition-plan-v7";
+const CACHE_NAME = "nutrition-plan-v8";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=7",
-  "./data.js?v=7",
-  "./chart.js?v=7",
-  "./app.js?v=7",
+  "./styles.css?v=8",
+  "./data.js?v=8",
+  "./chart.js?v=8",
+  "./nutrition.js?v=8",
+  "./app.js?v=8",
   "./manifest.webmanifest",
   "./icons/icon.svg",
   "./icons/ui/home.svg",
@@ -26,13 +27,28 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith("nutrition-plan-") && key !== CACHE_NAME).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+
+  // Fetch navigations first so an existing installation can discover a new app shell.
+  const url = new URL(event.request.url);
+  const scope = new URL(self.registration.scope);
+  const isAppDocument = url.origin === scope.origin && (url.pathname === scope.pathname || url.pathname === `${scope.pathname}index.html`);
+  if (event.request.mode === "navigate" && isAppDocument) {
+    event.respondWith(fetch(event.request).then((response) => {
+      if (response.ok && (response.headers.get("content-type") || "").includes("text/html")) {
+        const copy = response.clone();
+        event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", copy)));
+      }
+      return response;
+    }).catch(async () => (await caches.match("./index.html")) || caches.match("./")));
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cached) => {
