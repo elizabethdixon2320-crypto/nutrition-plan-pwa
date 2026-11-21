@@ -12,6 +12,7 @@
   const mealPlanner = window.MealPlanner;
   const recipePlanner = window.RecipePlanner;
   const dailyPlanner = window.DailyPlanner;
+  const preferredPlanner = window.PreferredPlanner;
   const foodById = new Map(foods.map((food) => [food.id, food]));
   const appRoot = document.getElementById("app");
 
@@ -256,6 +257,9 @@
     replacementSearch: "",
     dayPlan: null,
     dayStyle: "mixed",
+    preferredFoods: null,
+    preferredSearch: "",
+    preferredFilter: "common",
     dayReplaceMeal: null,
     dayReplaceItem: null,
     daySearch: "",
@@ -270,10 +274,11 @@
   function showToast(message) {
     ui.toast = message;
     clearTimeout(toastTimer);
-    render();
+    if (ui.modal === "preferred-foods") renderPreferredEditor();
+    else render();
     toastTimer = setTimeout(() => {
       ui.toast = "";
-      render();
+      appRoot.querySelector(".toast")?.remove();
     }, 2600);
   }
 
@@ -418,7 +423,7 @@
           </div>
           <p class="microcopy">${state.plan ? `每日 ${formatNumber(targetCalories())} kcal 按比例分配；改变餐数不改变每日总量。` : "先在个人资料生成每日目标，再查看每餐分配。"}${extraNames.length ? " 当前有计划外记录，每日剩余量请以上方汇总为准。" : ""}</p>
           <button class="button primary full daily-open-button" data-action="open-daily">定制全天食谱</button>
-          <p class="microcopy">品牌食品＋鸡蛋、米饭等常见食物，列出每餐份量；计划不会自动算作已吃。</p>
+          <p class="microcopy">先选想吃的品牌和食物，再按目标搭配每餐；计划不会自动算作已吃。</p>
           <div class="meal-groups">${mealHtml}</div>
         </section>
       </main>
@@ -1066,6 +1071,7 @@
     // Save only this date's draft; never overwrite another tab's food logs.
     if (dailyContext().stale) return;
     state.dailyRecipeDrafts = { ...state.dailyRecipeDrafts, [ui.dayPlan.date]: JSON.parse(JSON.stringify(ui.dayPlan)) };
+    if (ui.dayPlan.style === "preferred") state.dailyFoodPreferences = JSON.parse(JSON.stringify(ui.dayPlan.preferences));
     saveState();
   }
 
@@ -1090,7 +1096,114 @@
     const saved = state.dailyRecipeDrafts?.[toDateKey(new Date())];
     ui.dayPlan = validDailyDraft(saved) ? JSON.parse(JSON.stringify(saved)) : null;
     ui.dayStyle = ui.dayPlan?.style || "mixed";
-    if (!ui.dayPlan) generateDaily();
+    if (ui.dayPlan) { ui.modal = "daily"; render(); }
+    else openPreferredFoods();
+  }
+
+  const starterFoods = ["egg", "oats", "greek_yogurt", "banana", "rice_cooked", "chicken_breast", "broccoli", "olive_oil"];
+  const mainlandBrands = [...new Set(brandFoods.filter((food) => food.region === "中国大陆").map((food) => food.brand))];
+  const autoBrandNames = new Set(mainlandBrands.filter((brand) => brandFoods.some((food) => food.brand === brand && food.region === "中国大陆" && hasFullNutrition(food))));
+
+  function hasFullNutrition(food) {
+    return ["kcal", "protein", "carbs", "fat"].every((key) => Number.isFinite(food[key]));
+  }
+
+  function canSelectPreferred(food) {
+    return food && food.id !== "brazil_nuts" && (!food.brand || food.region === "中国大陆");
+  }
+
+  function openPreferredFoods() {
+    const saved = ui.dayPlan?.preferences || state.dailyFoodPreferences;
+    const foodIds = Array.isArray(saved?.foodIds) ? [...new Set(saved.foodIds)].filter((id) => canSelectPreferred(foodById.get(id))) : [];
+    ui.preferredFoods = {
+      brands: Array.isArray(saved?.brands) ? [...new Set(saved.brands)].filter((brand) => mainlandBrands.includes(brand)) : [],
+      foodIds,
+      pins: Array.isArray(saved?.pins) ? saved.pins.filter((pin) => pin && foodIds.includes(pin.foodId)).map((pin) => ({ ...pin })) : []
+    };
+    ui.preferredSearch = "";
+    ui.preferredFilter = "all";
+    ui.toast = "";
+    ui.modal = "preferred-foods";
+    render();
+  }
+
+  function preferredFoodRows() {
+    const term = ui.preferredSearch.trim().toLowerCase();
+    const choices = foods.filter((food) => canSelectPreferred(food) &&
+      (ui.preferredFilter === "all" || (ui.preferredFilter === "brand") === Boolean(food.brand)) &&
+      (term ? [food.name, ...(food.aliases || [])].join(" ").toLowerCase().includes(term)
+        : food.brand ? !ui.preferredFoods.brands.length || ui.preferredFoods.brands.includes(food.brand) : food.common || starterFoods.includes(food.id)));
+    return choices.map((food) => {
+      const selected = ui.preferredFoods.foodIds.includes(food.id);
+      return `<label class="preferred-choice"><input type="checkbox" data-preferred-food="${escapeHtml(food.id)}" ${selected ? "checked" : ""} /><span><strong>${escapeHtml(food.name)}</strong><small>${escapeHtml(food.brand ? food.servingLabel : weighingLabel(food))}${hasFullNutrition(food) ? "" : " · 营养不全，指定餐次后才安排"}</small></span><span class="preferred-kcal">${food.kcal} <small>kcal / ${food.brand ? "份" : "100g"}</small></span></label>`;
+    }).join("") || '<p class="empty-meal">没有找到，试试“全部”或换个名称。</p>';
+  }
+
+  function preferredSelectedFoods() {
+    const meals = mealPlanFor();
+    return ui.preferredFoods.foodIds.map((id) => {
+      const food = foodById.get(id);
+      const pin = ui.preferredFoods.pins.find((item) => item.foodId === id);
+      const serving = foodNutrition.isServing(food);
+      return `<div class="preferred-selected"><div class="section-head"><h4>${escapeHtml(food.name)}</h4><button class="pill-button" data-preferred-remove="${escapeHtml(id)}" aria-label="移除${escapeHtml(food.name)}">移除</button></div>
+        <div class="preferred-pin"><label>安排方式<select data-pin-meal="${escapeHtml(id)}" aria-label="${escapeHtml(food.name)}安排方式"><option value="">可选 · 自动决定</option>${pin && !meals.some((meal) => meal.name === pin.mealName) ? `<option value="${escapeHtml(pin.mealName)}" selected>原餐次已变更，请重选</option>` : ""}${meals.map((meal) => `<option value="${escapeHtml(meal.name)}" ${meal.name === pin?.mealName ? "selected" : ""}>必吃 · ${escapeHtml(meal.name)}</option>`).join("")}</select></label>${pin ? `<label>固定${serving ? "份数" : "克数"}<input data-pin-amount="${escapeHtml(id)}" aria-label="${escapeHtml(food.name)}固定${serving ? "份数" : "克数"}" type="number" inputmode="decimal" min="${serving ? 0.01 : 1}" max="${serving ? 20 : 2000}" step="${serving ? 0.01 : 1}" value="${pin.amount ?? ""}" /></label>` : ""}</div>
+        <small>${escapeHtml(serving ? `1 份 = ${food.servingLabel}` : weighingLabel(food))}${hasFullNutrition(food) ? "" : " · 有未公布营养素"}</small></div>`;
+    }).join("") || '<p class="empty-meal">还没有选食物。可从下面搜索，或一键加入常见食材。</p>';
+  }
+
+  function preferredFoodsModal() {
+    const context = dailyContext();
+    const meals = context.allocated.ok ? context.allocated.meals : [];
+    const prefs = ui.preferredFoods;
+    return `<div class="scrim" data-action="close-modal"></div><section class="sheet daily-sheet preferred-sheet" role="dialog" aria-modal="true" aria-label="先选想吃的食物" tabindex="-1"><div class="sheet-handle"></div>
+      <div class="sheet-head"><div><h2>先选想吃的</h2><p>第 1 步 · 选食物，自动配份量</p></div><button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button></div>
+      <p class="microcopy">今天 ${meals.length} 餐，共 ${formatNumber(context.targets.kcal)} kcal。只从你选择的范围里搭配，可选食物不一定都会用上；选得太少时会显示差额。</p>
+      ${ui.dayPlan ? '<button class="pill-button" data-action="back-daily">返回已有食谱</button>' : '<button class="pill-button" data-action="auto-daily">先试默认搭配</button>'}
+      ${meals.length !== 3 ? '<button class="pill-button" data-action="preferred-three-meals">调整为三餐</button>' : ""}
+      <fieldset class="preferred-brands"><legend>想吃的品牌（可不选）</legend><div class="preferred-brand-options">${mainlandBrands.map((brand) => `<label class="preferred-chip"><input type="checkbox" data-preferred-brand="${escapeHtml(brand)}" ${prefs.brands.includes(brand) ? "checked" : ""} />${escapeHtml(brand)}</label>`).join("")}</div><p class="microcopy">勾品牌表示允许自动从该品牌选符合目标的主食。赛百味、瑞幸目前需勾具体产品并指定餐次，未公布的宏量营养不会猜算。</p></fieldset>
+      <div class="section-head"><h3>选具体食物</h3><button class="pill-button" data-action="preferred-starter">加入常见食材</button></div>
+      <p class="microcopy">可一键加入鸡蛋、燕麦、酸奶、香蕉、米饭、鸡胸肉、西兰花和橄榄油，再逐项调整。</p>
+      <div class="field"><label for="preferred-search">搜索食物或产品</label><input id="preferred-search" type="search" placeholder="例如：鸡蛋、米饭、巨无霸…" value="${escapeHtml(ui.preferredSearch)}" /></div>
+      <div class="field"><label for="preferred-filter">食物范围</label><select id="preferred-filter">${[["common", "基础食物"], ["brand", "大陆品牌食品"], ["all", "全部"]].map(([id, label]) => `<option value="${id}" ${id === ui.preferredFilter ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+      <div id="preferred-foods" class="preferred-list">${preferredFoodRows()}</div>
+      <div class="preferred-selection-heading section-head"><h3>已选食物（${prefs.foodIds.length}）</h3></div>
+      <p class="microcopy">想让某项一定出现？在下面选择“必吃”和餐次，再填固定份量。</p>
+      <div id="preferred-selected">${preferredSelectedFoods()}</div>
+      <div class="preferred-footer"><button class="button primary full" data-action="generate-preferred">用已选食物生成 ${meals.length} 餐</button></div>
+    </section>`;
+  }
+
+  function renderPreferredEditor(focusSelector) {
+    const scroll = document.querySelector(".preferred-sheet")?.scrollTop || 0;
+    const listScroll = document.getElementById("preferred-foods")?.scrollTop || 0;
+    render();
+    document.querySelector(focusSelector || ".preferred-sheet")?.focus({ preventScroll: true });
+    document.querySelector(".preferred-sheet").scrollTop = scroll;
+    document.getElementById("preferred-foods").scrollTop = listScroll;
+  }
+
+  async function generatePreferred() {
+    state = latestStoredState();
+    const context = dailyContext();
+    if (!state.plan || !context.allocated.ok) { showToast("请先保存个人营养目标"); return; }
+    const prefs = ui.preferredFoods;
+    if (!prefs.foodIds.length && !prefs.brands.some((brand) => autoBrandNames.has(brand))) { showToast("请先选食物或有完整营养资料的品牌；可加入常见食材"); return; }
+    const pins = prefs.pins.map((pin) => ({ foodId: pin.foodId, amount: pin.amount, mealIndex: context.allocated.meals.findIndex((meal) => meal.name === pin.mealName) }));
+    if (pins.some((pin) => pin.mealIndex < 0)) { showToast("餐次已变化，请给必吃食物重新选择餐次"); return; }
+    const invalid = pins.find((pin) => !foodNutrition.validateAmount(foodById.get(pin.foodId), pin.amount).ok || (!foodNutrition.isServing(foodById.get(pin.foodId)) && !Number.isInteger(pin.amount)));
+    if (invalid) { showToast(`请检查${foodById.get(invalid.foodId).name}的固定量：克数用正整数，品牌份数最多两位小数`); return; }
+    const result = preferredPlanner.generate(foods, context.allocated.meals, { ...prefs, pins });
+    if (!result.ok) { showToast(result.errors.join("；")); return; }
+    if (ui.dayPlan) {
+      if (!window.confirm("用当前选择生成新食谱？只会替换今日草稿，不会改动已经记录的食物。")) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (ui.modal !== "preferred-foods") return;
+      state = latestStoredState();
+      if (!state.plan || dailyContext().basis !== context.basis) { showToast("目标或餐次已变化，请重新生成"); return; }
+    }
+    ui.dayPlan = { id: makeId("daily"), date: context.date, basis: context.basis, style: "preferred", preferences: JSON.parse(JSON.stringify(prefs)), warnings: result.warnings || [], meals: result.meals };
+    rememberDaily();
+    ui.toast = "";
     ui.modal = "daily";
     render();
   }
@@ -1128,14 +1241,26 @@
       <p class="microcopy">已列出的基础蔬果约 ${formatNumber(produce)}g（不计品牌中未知克重的蔬菜）。${produce < 400 ? "本计划已计蔬果不足 400g，可增加或替换蔬果后查看新总量。" : "仍需注意食物多样性。"} <a href="https://www.who.int/news-room/fact-sheets/detail/healthy-diet" target="_blank" rel="noopener noreferrer">WHO 膳食参考</a></p>`;
   }
 
+  function dailyPreferenceNotes(plan) {
+    const used = plan.meals.flatMap((meal) => meal.items.filter((item) => item.amount > 0).map((item) => foodById.get(item.foodId)));
+    const skipped = (plan.preferences?.foodIds || []).filter((id) => !used.some((food) => food.id === id)).map((id) => foodById.get(id)?.name).filter(Boolean);
+    const unusedBrands = (plan.preferences?.brands || []).filter((brand) => !used.some((food) => food.brand === brand));
+    const incomplete = skipped.length && plan.preferences.foodIds.some((id) => !used.some((food) => food.id === id) && foodById.has(id) && !hasFullNutrition(foodById.get(id)));
+    return `<p class="microcopy">只使用所选品牌和食物。想让某项一定出现，请在选择页设为“必吃”并指定餐次及份量。</p>
+      ${(plan.warnings || []).map((warning) => `<p class="microcopy">${escapeHtml(warning)}</p>`).join("")}
+      ${skipped.length ? `<p class="microcopy">本次未用：${escapeHtml(skipped.join("、"))}。${incomplete ? "资料不完整的产品需要指定餐次。" : "可改为必吃或换一组食材。"}</p>` : ""}
+      ${unusedBrands.length ? `<p class="microcopy">本次未安排品牌：${escapeHtml(unusedBrands.join("、"))}。自动最多搭一餐品牌成品，若想指定某个产品，请直接选择它。</p>` : ""}`;
+  }
+
   function dailyModal() {
     if (!ui.dayPlan) return "";
     const context = dailyContext();
+    const preferred = ui.dayPlan.style === "preferred";
     return `<div class="scrim" data-action="close-modal"></div><section class="sheet daily-sheet" role="dialog" aria-modal="true" aria-label="定制全天食谱"><div class="sheet-handle"></div>
       <div class="sheet-head"><div><h2>一天吃什么</h2><p>${escapeHtml(ui.dayPlan.date)} · ${ui.dayPlan.meals.length} 餐 · ${ui.dayPlan.meals.some(dailyLogged) ? `本方案已记录 ${ui.dayPlan.meals.filter(dailyLogged).length} 餐` : "尚未计为已吃"}</p></div><button class="close-button" data-action="close-modal" aria-label="关闭">${icon("x")}</button></div>
       <p class="microcopy">按你已保存的每日目标和餐次分配。这里是整日计划，不扣除已吃记录；已吃过的餐不要再次计入。草稿只保存在当前浏览器。</p>
-      <div class="daily-controls"><div class="field"><label for="daily-style">搭配方式</label><select id="daily-style"><option value="mixed" ${ui.dayStyle === "mixed" ? "selected" : ""}>品牌＋常见食物</option><option value="common" ${ui.dayStyle === "common" ? "selected" : ""}>常见食物为主</option></select></div><button class="button secondary" data-action="regenerate-daily">重新生成／换一天搭配</button></div>
-      <p class="microcopy">当前方案：${ui.dayPlan.style === "mixed" ? "品牌＋常见食物" : "常见食物为主"}。混合方案默认最多安排一餐大陆品牌主食；品牌自动搭配只使用营养完整条目，目前主要是麦当劳。赛百味、瑞幸可手动替换，未公布营养会单独提示。</p>
+      <div class="daily-controls"><button class="button secondary" data-action="edit-preferred">${preferred ? "重选品牌和食物" : "先选想吃的品牌和食物"}</button>${preferred ? "" : `<div class="field"><label for="daily-style">搭配方式</label><select id="daily-style"><option value="mixed" ${ui.dayStyle === "mixed" ? "selected" : ""}>品牌＋常见食物</option><option value="common" ${ui.dayStyle === "common" ? "selected" : ""}>常见食物为主</option></select></div><button class="button secondary" data-action="regenerate-daily">重新生成／换一天搭配</button>`}</div>
+      ${preferred ? `<div id="daily-preference-notes">${dailyPreferenceNotes(ui.dayPlan)}</div>` : `<p class="microcopy">当前方案：${ui.dayPlan.style === "mixed" ? "品牌＋常见食物" : "常见食物为主"}。混合方案默认最多安排一餐大陆品牌主食；品牌自动搭配只使用营养完整条目，目前主要是麦当劳。赛百味、瑞幸可手动替换，未公布营养会单独提示。</p>`}
       ${context.stale ? '<p class="recipe-warning" role="status">日期、每日目标或餐次已变化。以下是旧草稿，请重新生成后再计入；已有饮食记录不受影响。</p>' : ""}
       <div id="daily-summary" aria-live="polite">${dailySummary()}</div>
       <div class="daily-meals">${ui.dayPlan.meals.map((meal, mi) => {
@@ -1146,9 +1271,10 @@
           ${meal.items.map((item, ii) => {
             const food = foodById.get(item.foodId);
             const serving = foodNutrition.isServing(food);
-            return `<div class="daily-food" data-daily-food="${escapeHtml(item.foodId)}"><div class="recipe-food-head"><div><h4>${escapeHtml(food.name)}</h4><span class="weighing-label">${escapeHtml(serving ? `${food.region} · 1份 = ${food.servingLabel}` : weighingLabel(food))}</span></div><button class="pill-button" data-action="replace-daily" data-mi="${mi}" data-ii="${ii}" ${disabled ? "disabled" : ""}>替换</button></div>
-              <div class="recipe-grams-row"><label for="day-qty-${mi}-${ii}">${serving ? "标准份数" : "实际克数"}</label><div><input id="day-qty-${mi}-${ii}" type="number" min="0" max="${serving ? 20 : 2000}" step="${serving ? 0.01 : 1}" value="${item.amount ?? ""}" data-day-amount data-mi="${mi}" data-ii="${ii}" ${disabled ? "disabled" : ""} /><span>${serving ? "份" : "g"}</span></div></div>
-              ${serving ? `<p class="microcopy">按官方默认配方，0.5 份表示等比例半份，不能模拟去面包、改糖奶。${food.sourceUrl ? `<a href="${escapeHtml(food.sourceUrl)}" target="_blank" rel="noopener noreferrer">官方配置与来源</a>` : ""}</p>` : `<label class="daily-lock"><input type="checkbox" data-day-lock data-mi="${mi}" data-ii="${ii}" ${item.locked ? "checked" : ""} ${disabled ? "disabled" : ""} />固定份量，重算时保留${food.id === "egg" ? "（水煮蛋去壳后称重，不按固定个重）" : ""}</label>`}
+            const pinned = preferred && ui.dayPlan.preferences?.pins.some((pin) => pin.foodId === food.id && pin.mealName === meal.name);
+            return `<div class="daily-food" data-daily-food="${escapeHtml(item.foodId)}"><div class="recipe-food-head"><div><h4>${escapeHtml(food.name)}</h4><span class="weighing-label">${escapeHtml(serving ? `${food.region} · 1份 = ${food.servingLabel}` : weighingLabel(food))}</span>${pinned ? '<span class="weighing-label">必吃 · 已固定</span>' : ""}</div><button class="pill-button" data-action="replace-daily" data-mi="${mi}" data-ii="${ii}" ${disabled || pinned ? "disabled" : ""}>替换</button></div>
+              <div class="recipe-grams-row"><label for="day-qty-${mi}-${ii}">${pinned ? "固定量（到选择页修改）" : serving ? "标准份数" : "计划克数"}</label><div><input id="day-qty-${mi}-${ii}" type="number" min="0" max="${serving ? 20 : 2000}" step="${serving ? 0.01 : 1}" value="${item.amount ?? ""}" data-day-amount data-mi="${mi}" data-ii="${ii}" ${disabled ? "disabled" : pinned ? "readonly" : ""} /><span>${serving ? "份" : "g"}</span></div></div>
+              ${serving ? `<p class="microcopy">按官方默认配方，0.5 份表示等比例半份，不能模拟去面包、改糖奶。${food.sourceUrl ? `<a href="${escapeHtml(food.sourceUrl)}" target="_blank" rel="noopener noreferrer">官方配置与来源</a>` : ""}</p>` : `<label class="daily-lock"><input type="checkbox" data-day-lock data-mi="${mi}" data-ii="${ii}" ${item.locked ? "checked" : ""} ${disabled || pinned ? "disabled" : ""} />固定份量，重算时保留${food.id === "egg" ? "（水煮蛋去壳后称重，不按固定个重）" : ""}</label>`}
               ${serving ? `<small class="daily-source-note">${escapeHtml(food.standardRecipe)} ${escapeHtml(food.notes)}</small>` : ""}</div>`;
           }).join("")}
           <div id="daily-feedback-${mi}" aria-live="polite">${dailyMealFeedback(meal)}</div>
@@ -1162,8 +1288,13 @@
     const term = ui.daySearch.trim().toLowerCase();
     const meal = ui.dayPlan.meals[ui.dayReplaceMeal];
     const selected = new Set(meal.items.filter((_, index) => index !== ui.dayReplaceItem).map((item) => item.foodId));
-    const matches = foods.filter((food) => (!food.brand || food.region === "中国大陆") && (ui.dayFilter === "all" || (ui.dayFilter === "brand") === foodNutrition.isServing(food)) && [food.name, ...(food.aliases || [])].join(" ").toLowerCase().includes(term));
+    const matches = foods.filter((food) => (!food.brand || food.region === "中国大陆") && allowedDailyReplacement(food) && (ui.dayFilter === "all" || (ui.dayFilter === "brand") === foodNutrition.isServing(food)) && [food.name, ...(food.aliases || [])].join(" ").toLowerCase().includes(term));
     return matches.map((food) => `<button class="recipe-replacement-row" data-day-replacement="${escapeHtml(food.id)}" ${selected.has(food.id) || food.id === "brazil_nuts" ? "disabled" : ""}><span><strong>${escapeHtml(food.name)}</strong><small>${escapeHtml(foodNutrition.isServing(food) ? `${food.region} · ${food.servingLabel}` : weighingLabel(food))}${selected.has(food.id) ? " · 本餐已包含" : ""}${food.id === "brazil_nuts" ? " · 不用于自动配餐" : ""}${["protein", "carbs", "fat"].some((key) => !Number.isFinite(food[key])) ? " · 营养资料不完整" : ""}</small></span><span>${food.kcal}<small>${foodNutrition.isServing(food) ? "kcal / 份" : "kcal / 100g"}</small></span></button>`).join("") || '<p class="empty-meal">未找到对应食物，试试另一个名称。</p>';
+  }
+
+  function allowedDailyReplacement(food) {
+    if (ui.dayPlan.style !== "preferred") return true;
+    return ui.dayPlan.preferences?.foodIds.includes(food.id) || ui.dayPlan.meals.some((meal) => meal.items.some((item) => item.foodId === food.id));
   }
 
   function dailyReplacementModal() {
@@ -1184,7 +1315,7 @@
     state = latestStoredState();
     const meal = ui.dayPlan.meals[ui.dayReplaceMeal];
     const food = foodById.get(foodId);
-    if (dailyContext().stale || dailyLogged(meal) || !food || (food.brand && food.region !== "中国大陆") || foodId === "brazil_nuts") { showToast("当前方案不可替换，请返回检查日期或记录状态"); return; }
+    if (dailyContext().stale || dailyLogged(meal) || !food || !allowedDailyReplacement(food) || (food.brand && food.region !== "中国大陆") || foodId === "brazil_nuts") { showToast("当前方案不可替换，请返回检查选择、日期或记录状态"); return; }
     if (meal.items.some((item, index) => index !== ui.dayReplaceItem && item.foodId === foodId)) { showToast("本餐已有该食物，可直接修改原项份量"); return; }
     meal.items[ui.dayReplaceItem] = { foodId, amount: foodNutrition.isServing(food) ? 1 : food.portion, locked: foodNutrition.isServing(food) };
     rebalanceDailyMeal(ui.dayReplaceMeal);
@@ -1201,12 +1332,13 @@
     if (errors.length) { showToast(errors.join("；")); return; }
     const duplicates = selected.filter((meal) => todayLogs().some((log) => log.meal === meal.name));
     const confirmedLogs = JSON.stringify(todayLogs());
+    const confirmedPlan = JSON.stringify(ui.dayPlan);
     if ((mealIndex === null || duplicates.length) && !window.confirm(`确认这些食物已经吃完？将追加记录：${selected.map((meal) => meal.name).join("、")}。${duplicates.length ? `其中 ${duplicates.map((meal) => meal.name).join("、")} 已有记录，继续可能重复计入。` : ""}不会替换或删除原记录。`)) return;
     // A native confirmation can remain open while another tab writes data.
     // Let queued storage events synchronize this renderer before rereading.
     await new Promise((resolve) => setTimeout(resolve, 0));
     state = latestStoredState();
-    if (dailyContext().stale || JSON.stringify(todayLogs()) !== confirmedLogs || selected.some(dailyLogged)) {
+    if (JSON.stringify(ui.dayPlan) !== confirmedPlan || dailyContext().stale || JSON.stringify(todayLogs()) !== confirmedLogs || selected.some(dailyLogged)) {
       showToast("确认期间记录或目标已变化，未新增食物。请核对最新数据后重新确认");
       return;
     }
@@ -1218,6 +1350,7 @@
   }
 
   function renderModal() {
+    if (ui.modal === "preferred-foods") return preferredFoodsModal();
     if (ui.modal === "daily") return dailyModal();
     if (ui.modal === "daily-replacement") return dailyReplacementModal();
     if (ui.modal === "food") return foodModal();
@@ -1556,6 +1689,51 @@
 
     const dayStyle = document.getElementById("daily-style");
     if (dayStyle) dayStyle.addEventListener("change", () => { ui.dayStyle = dayStyle.value; });
+    const preferredSheet = document.querySelector(".preferred-sheet");
+    if (preferredSheet) {
+      const setPreferredFood = (id, checked) => {
+        const prefs = ui.preferredFoods;
+        if (checked && canSelectPreferred(foodById.get(id))) prefs.foodIds = [...new Set([...prefs.foodIds, id])];
+        else {
+          prefs.foodIds = prefs.foodIds.filter((value) => value !== id);
+          prefs.pins = prefs.pins.filter((pin) => pin.foodId !== id);
+        }
+        renderPreferredEditor(`[data-preferred-food="${CSS.escape(id)}"]`);
+      };
+      preferredSheet.addEventListener("click", (event) => {
+        const remove = event.target.closest("[data-preferred-remove]");
+        if (remove) setPreferredFood(remove.dataset.preferredRemove, false);
+      });
+      preferredSheet.addEventListener("input", (event) => {
+        const input = event.target;
+        if (input.id === "preferred-search") {
+          ui.preferredSearch = input.value;
+          document.getElementById("preferred-foods").innerHTML = preferredFoodRows();
+        } else if (input.dataset.pinAmount) {
+          const pin = ui.preferredFoods.pins.find((item) => item.foodId === input.dataset.pinAmount);
+          if (pin) pin.amount = input.value.trim() === "" ? null : Number(input.value);
+        }
+      });
+      preferredSheet.addEventListener("change", (event) => {
+        const input = event.target;
+        const { preferredFood, preferredBrand, pinMeal } = input.dataset;
+        if (preferredFood) setPreferredFood(preferredFood, input.checked);
+        else if (preferredBrand) {
+          const prefs = ui.preferredFoods;
+          prefs.brands = input.checked ? [...new Set([...prefs.brands, preferredBrand])] : prefs.brands.filter((brand) => brand !== preferredBrand);
+          document.getElementById("preferred-foods").innerHTML = preferredFoodRows();
+        } else if (pinMeal) {
+          const food = foodById.get(pinMeal);
+          const previous = ui.preferredFoods.pins.find((pin) => pin.foodId === pinMeal);
+          ui.preferredFoods.pins = ui.preferredFoods.pins.filter((pin) => pin.foodId !== pinMeal);
+          if (input.value && food) ui.preferredFoods.pins.push({ foodId: pinMeal, mealName: input.value, amount: previous ? previous.amount : foodNutrition.isServing(food) ? 1 : Math.max(1, Math.round(food.portion || 100)) });
+          renderPreferredEditor(`[data-pin-meal="${CSS.escape(pinMeal)}"]`);
+        } else if (input.id === "preferred-filter") {
+          ui.preferredFilter = input.value;
+          document.getElementById("preferred-foods").innerHTML = preferredFoodRows();
+        }
+      });
+    }
     document.querySelectorAll("[data-day-amount]").forEach((input) => {
       input.addEventListener("input", () => {
         const mi = Number(input.dataset.mi), ii = Number(input.dataset.ii);
@@ -1568,6 +1746,8 @@
         if (lock) lock.checked = true;
         document.getElementById(`daily-feedback-${mi}`).innerHTML = dailyMealFeedback(meal);
         document.getElementById("daily-summary").innerHTML = dailySummary();
+        const preferenceNotes = document.getElementById("daily-preference-notes");
+        if (preferenceNotes) preferenceNotes.innerHTML = dailyPreferenceNotes(ui.dayPlan);
         const record = document.querySelector(`[data-action="record-daily-meal"][data-mi="${mi}"]`);
         if (record) record.disabled = !meal.items.some((item) => item.amount > 0);
         rememberDaily();
@@ -1596,6 +1776,21 @@
         const action = button.dataset.action;
         if (action === "open-daily") {
           openDaily();
+        } else if (action === "edit-preferred") {
+          openPreferredFoods();
+        } else if (action === "preferred-starter") {
+          ui.preferredFoods.foodIds = [...new Set([...ui.preferredFoods.foodIds, ...starterFoods])];
+          renderPreferredEditor('[data-action="preferred-starter"]');
+        } else if (action === "preferred-three-meals") {
+          openMeals();
+          ui.mealDraft = mealPlanner.preset(3);
+          render();
+        } else if (action === "generate-preferred") {
+          await generatePreferred();
+        } else if (action === "auto-daily") {
+          ui.dayStyle = "mixed";
+          generateDaily();
+          if (ui.dayPlan) { ui.modal = "daily"; render(); }
         } else if (action === "regenerate-daily") {
           if (!window.confirm("重新生成会替换当前食谱草稿；已经吃过并记录的食物保持不变。继续吗？")) return;
           generateDaily((ui.dayPlan?.variant || 0) + 1);
@@ -1740,7 +1935,7 @@
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=12", { updateViaCache: "none" }).catch((error) => {
+      navigator.serviceWorker.register("./sw.js?v=13", { updateViaCache: "none" }).catch((error) => {
         console.warn("离线缓存注册失败。", error);
       });
     });

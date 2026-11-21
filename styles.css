@@ -1375,6 +1375,25 @@ select:focus-visible {
 .daily-source-note { display: block; color: #666; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
 .daily-sheet a { color: inherit; text-decoration: underline; }
 .daily-sheet button:disabled, .daily-sheet input:disabled { opacity: .5; cursor: not-allowed; }
+.preferred-brands { border: 0; border-bottom: 1px solid #e8e8e5; margin: 16px 0 20px; padding: 0 0 10px; min-width: 0; }
+.preferred-brands legend { font-weight: 650; font-size: 14px; }
+.preferred-brand-options { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.preferred-chip { display: inline-flex; align-items: center; min-height: 42px; gap: 7px; padding: 6px 10px; border: 1px solid #d8d8d6; border-radius: 999px; font-size: 13px; cursor: pointer; }
+.preferred-chip:has(input:checked) { background: #ededeb; border-color: #171717; }
+.preferred-sheet input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: #171717; }
+.preferred-sheet .section-head h3 { font-size: 16px; margin: 0; }
+.preferred-list { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 0 0; border-bottom: 1px solid #e8e8e5; }
+.preferred-selection-heading { margin-top: 20px; }
+.preferred-choice { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid #e8e8e5; cursor: pointer; min-height: 56px; }
+.preferred-choice strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.preferred-choice small, .preferred-selected > small { display: block; margin-top: 4px; font-size: 11px; color: #666; line-height: 1.5; }
+.preferred-kcal { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
+.preferred-selected { background: #f5f5f3; border-radius: 12px; padding: 10px; margin: 0 0 10px; }
+.preferred-selected h4 { font-size: 14px; margin: 0; overflow-wrap: anywhere; }
+.preferred-pin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .65fr); gap: 8px; }
+.preferred-pin label { font-size: 11px; color: #575755; min-width: 0; }
+.preferred-pin input, .preferred-pin select { display: block; width: 100%; max-width: 100%; min-height: 44px; height: auto; margin: 4px 0; padding: 7px; font-size: 16px; box-sizing: border-box; border: 1px solid #d6d6d4; border-radius: 9px; background: #fff; color: #171717; }
+.preferred-footer { position: sticky; bottom: 0; display: grid; gap: 8px; padding: 12px 0 max(8px, env(safe-area-inset-bottom)); background: #fff; border-top: 1px solid #e8e8e5; }
 .food-row h3, .food-row p, .sheet-head h2 { overflow-wrap: anywhere; }
 .nutrition-preview strong { overflow-wrap: anywhere; }
 @media (max-width: 430px) {
